@@ -4,6 +4,8 @@ backups
 .env
 serverchan.json
 serverchan.json.*
+ai-settings.json
+ai-settings.json.*
 .git
 node_modules
 test

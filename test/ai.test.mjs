@@ -1,0 +1,227 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { OfficeStore } from '../lib/office.mjs';
+import { AiService } from '../lib/ai.mjs';
+
+const apiKey = 'unit-test-key-do-not-disclose';
+const chatResponse = (content = '虚构会议纪要：待核对。') => new Response(JSON.stringify({ choices: [{ message: { content } }] }));
+const taskInput = { title: '不应自动外发的任务', owner: '测试人', startDate: '2026-10-01', dueDate: '2026-10-20', deliverable: '不应自动外发的交付要求', description: '不应自动外发的任务说明' };
+
+async function fixture(t, options = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'office-ai-'));
+  const store = new OfficeStore({ databasePath: join(dir, 'office.sqlite'), seedDemo: false });
+  const requests = []; const services = [];
+  const fetchImpl = options.fetchImpl || (async (url, request) => { requests.push({ url, ...request }); return chatResponse(); });
+  const service = (extra = {}) => { const client = new AiService({ store, dataDir: dir, fetchImpl, ...options, ...extra }); services.push(client); return client; };
+  const client = service();
+  t.after(async () => { for (const client of services) await client.close(); store.close(); await rm(dir, { force: true, recursive: true }); });
+  const configure = () => client.updateSettings({ enabled: true, model: 'fake-chat', transcriptionModel: 'fake-audio', apiKey });
+  const material = (extra = {}) => client.saveMaterial({ title: '本次会议素材', kind: '素材', content: '2026 年 10 月 20 日讨论虚构项目，仅确认补充核对数据。', ...extra });
+  const generate = (extra = {}) => client.generate({ title: '虚构初稿', templateId: 'builtin-minutes', materialIds: [material().id], referenceIds: [], consent: true, ...extra });
+  return { dir, store, client, requests, service, configure, material, generate };
+}
+
+test('AI 默认关闭，配置独立原子保存、密钥不返回且不进入 SQLite 备份', async t => {
+  const { dir, store, client, service, requests } = await fixture(t);
+  assert.deepEqual(client.state().settings, { enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', transcriptionModel: '', keyConfigured: false, configError: null });
+  assert.equal(client.state().templates.length, 3);
+  assert.deepEqual(client.state().metrics, { reviewedCount: 0, usableCount: 0, usableRate: null });
+  await assert.rejects(client.generate({ consent: true }), /尚未启用/);
+  assert.equal(requests.length, 0);
+  assert.throws(() => client.updateSettings({ enabled: true }), /模型名称/);
+  const settings = client.updateSettings({ model: 'example-chat', apiKey });
+  assert.equal(settings.keyConfigured, true);
+  assert.equal(JSON.stringify(settings).includes(apiKey), false);
+  const original = await readFile(join(dir, 'ai-settings.json'), 'utf8');
+  assert.throws(() => client.updateSettings({ enabled: true, model: '', apiKey: 'different-key' }), /模型名称/);
+  assert.equal(await readFile(join(dir, 'ai-settings.json'), 'utf8'), original);
+  assert.equal(client.updateSettings({ apiKey: '  ' }).keyConfigured, true);
+  assert.equal(service().settings().keyConfigured, true);
+  const backupPath = join(dir, 'backup.sqlite'); store.createBackup(backupPath);
+  assert.equal((await readFile(backupPath)).includes(Buffer.from(apiKey)), false);
+  assert.equal(client.updateSettings({ clearApiKey: true }).keyConfigured, false);
+  assert.throws(() => client.updateSettings({ clearApiKey: 'true' }), /布尔/);
+});
+
+test('配置禁止不安全远程地址与秘密嵌入 URL，损坏配置安全停用且保留原文件', async t => {
+  const { dir, client, service } = await fixture(t);
+  for (const baseUrl of ['http://example.test/v1', 'file:///v1', 'https://user:pass@example.test', 'https://example.test/v1?key=secret', 'https://example.test/v1#secret', 'localhost:11434']) assert.throws(() => client.updateSettings({ baseUrl }), /地址|HTTPS/);
+  for (const baseUrl of ['http://127.0.0.1:1234/v1/', 'http://[::1]:11434/v1', 'https://example.test/v1']) assert.ok(client.updateSettings({ baseUrl }).baseUrl);
+  assert.throws(() => client.updateSettings({ apiKey: 'header\rinjection' }), /控制字符/);
+  const damaged = '{"apiKey":"' + apiKey + '",broken'; await writeFile(join(dir, 'ai-settings.json'), damaged);
+  const recovered = service();
+  assert.equal(recovered.settings().enabled, false); assert.equal(recovered.settings().keyConfigured, false);
+  assert.match(recovered.settings().configError, /安全停用/);
+  assert.equal(await readFile(join(dir, 'ai-settings.json'), 'utf8'), damaged);
+  assert.equal(JSON.stringify(recovered.state()).includes(apiKey), false);
+  assert.equal(recovered.updateSettings({ model: 'recovered' }).configError, null);
+});
+
+test('模板、素材按类型校验，关联任务校验，列表不泄露正文，软删除保留 SQLite 内容', async t => {
+  const { store, client, material } = await fixture(t);
+  const template = client.saveTemplate({ name: '自定义纪要', kind: '会议纪要', content: '只写已确认事项。' });
+  assert.equal(client.saveTemplate({ content: '列出待核对事项。' }, template.id).name, template.name);
+  assert.throws(() => client.saveTemplate({ name: '错误', kind: '随便', content: '内容' }), /模板类型/);
+  assert.throws(() => material({ content: '字'.repeat(20001) }), /20000/);
+  assert.throws(() => material({ taskId: 'missing' }), /关联任务/);
+  const task = store.createTask(taskInput); const saved = material({ taskId: task.id });
+  assert.equal(client.state().materials[0].taskId, task.id);
+  assert.equal(Object.hasOwn(client.state().materials[0], 'content'), false);
+  assert.equal(client.saveMaterial({ title: '重命名' }, saved.id).content, saved.content);
+  store.deleteTask(task.id);
+  assert.throws(() => material({ taskId: task.id }), /回收站/);
+  assert.deepEqual(client.deleteMaterial(saved.id), { deleted: true });
+  assert.equal(client.state().materials.length, 0);
+  assert.throws(() => client.getMaterial(saved.id), error => error.status === 404);
+  assert.ok(store.db.prepare('SELECT deletedAt FROM ai_materials WHERE id=?').get(saved.id).deletedAt);
+});
+
+test('连接测试仅发送固定虚构文字，允许停用时测试且拒绝未同意', async t => {
+  const { client, requests, store, material } = await fixture(t);
+  store.createTask(taskInput); material({ content: '不可外发的真实材料' });
+  client.updateSettings({ model: 'fake-chat', apiKey });
+  await assert.rejects(client.testConnection({}), /同意/);
+  assert.deepEqual(await client.testConnection({ consent: true }), { message: '模型服务连接成功，已收到有效回复。' });
+  assert.equal(requests.length, 1); const request = requests[0];
+  assert.equal(request.url, 'http://localhost:11434/v1/chat/completions');
+  assert.equal(request.redirect, 'error'); assert.equal(request.method, 'POST');
+  assert.equal(request.headers.Authorization, `Bearer ${apiKey}`);
+  const body = JSON.parse(request.body); assert.equal(body.stream, false); assert.equal(body.model, 'fake-chat');
+  assert.match(body.messages[0].content, /虚构/);
+  assert.doesNotMatch(request.body, /不可外发|不应自动外发/);
+});
+
+test('生成仅发送显式资料，隔离历史样例事实，保存稳定来源快照与模板，不上传任务库', async t => {
+  const { dir, client, configure, requests, store, material } = await fixture(t); configure();
+  const task = store.createTask(taskInput); const selected = material(); material({ title: '未选材料', content: '不应外发的未选材料' });
+  const reference = material({ title: '去年样例', kind: '历史样例', content: '旧年份旧数据只能参考格式。' });
+  const doc = await client.generate({ title: '纪要初稿', templateId: 'builtin-minutes', taskId: task.id, materialIds: [selected.id], referenceIds: [reference.id], consent: true });
+  assert.equal(doc.status, '待审核'); assert.equal(doc.revision, 1); assert.equal(doc.originalContent, doc.content); assert.equal(doc.taskId, task.id);
+  assert.equal(doc.sources.length, 2); assert.equal(doc.sources[1].kind, '历史样例');
+  const request = JSON.parse(requests[0].body); assert.match(request.messages[0].content, /历史样例仅用于.*绝不作为本次事实/);
+  assert.match(request.messages[1].content, /仅供格式参考的历史样例/);
+  assert.doesNotMatch(requests[0].body, /不应自动外发|不应外发的未选材料/);
+  client.saveMaterial({ content: '后来修改的内容' }, selected.id); client.deleteMaterial(reference.id);
+  client.saveTemplate({ content: '后来修改的模板' }, 'builtin-minutes');
+  const snapshot = client.getDocument(doc.id);
+  assert.equal(snapshot.sources[0].content, selected.content); assert.equal(snapshot.sources[1].content, reference.content);
+  assert.equal(snapshot.templateSnapshot.content, doc.templateSnapshot.content);
+  assert.equal(Object.hasOwn(client.state().documents[0], 'content'), false);
+  const backupPath = join(dir, 'with-ai.sqlite'); store.createBackup(backupPath);
+  const backup = new DatabaseSync(backupPath);
+  try { assert.equal(backup.prepare('SELECT originalContent FROM ai_documents WHERE id=?').get(doc.id).originalContent, doc.originalContent); }
+  finally { backup.close(); }
+});
+
+test('生成前校验资料数量、类型、存在、同意和总上下文，失败不调用上游或保存伪初稿', async t => {
+  const { client, configure, material, requests } = await fixture(t); configure();
+  const selected = material(); const reference = material({ kind: '历史样例' });
+  const base = { title: '初稿', templateId: 'builtin-minutes', materialIds: [selected.id], referenceIds: [], consent: true };
+  for (const extra of [{ consent: false }, { materialIds: [] }, { materialIds: [selected.id, selected.id] }, { materialIds: ['missing'] }, { materialIds: [reference.id] }, { referenceIds: [selected.id] }, { taskId: 'missing' }, { templateId: 'missing' }]) await assert.rejects(client.generate({ ...base, ...extra }));
+  const many = [material({ content: '甲'.repeat(20000) }), material({ content: '乙'.repeat(20000) }), material({ content: '丙'.repeat(20000) })];
+  await assert.rejects(client.generate({ ...base, materialIds: many.map(m => m.id) }), /60000/);
+  assert.equal(requests.length, 0); assert.equal(client.state().documents.length, 0);
+});
+
+test('截断或过滤的模型输出不能保存为完整初稿，兼容未返回结束原因的服务', async t => {
+  for (const [finishReason, message] of [['length', /长度限制.*不完整/], ['content_filter', /过滤.*未保存初稿/]]) {
+    const value = await fixture(t, { fetchImpl: async () => new Response(JSON.stringify({ choices: [{ finish_reason: finishReason, message: { content: '这是一段未完整生成的文字。' } }] })) });
+    value.configure();
+    await assert.rejects(value.generate(), error => error.status === 502 && message.test(error.message));
+    assert.equal(value.client.state().documents.length, 0);
+  }
+  const compatible = await fixture(t); compatible.configure();
+  assert.equal((await compatible.generate()).status, '待审核');
+});
+
+test('审核按版本门禁导出，编辑作废确认、保留初稿审核历史；质量台账按文档去重', async t => {
+  const { client, configure, generate, store } = await fixture(t); configure();
+  store.updateSettings({ adminName: '人工审核员' });
+  const doc = await generate();
+  assert.throws(() => client.exportDocument(doc.id), error => error.status === 409);
+  assert.throws(() => client.reviewDocument(doc.id, { revision: 1, quality: '可用' }), /核对/);
+  assert.throws(() => client.reviewDocument(doc.id, { revision: 1, confirmed: true, quality: '差不多' }), /原始初稿评价/);
+  const approved = client.reviewDocument(doc.id, { revision: 1, confirmed: true, quality: '需修改', reviewNote: '原始稿日期待核对，现已人工核实。' });
+  assert.equal(approved.status, '已确认'); assert.equal(approved.reviews[0].reviewer, '人工审核员');
+  assert.deepEqual(client.exportDocument(doc.id), { title: doc.title, content: doc.content });
+  assert.throws(() => client.reviewDocument(doc.id, { revision: 1, confirmed: true, quality: '可用' }), /无需重复/);
+  assert.equal(client.updateDocument(doc.id, { revision: 1, title: doc.title, content: doc.content }).status, '已确认');
+  const edited = client.updateDocument(doc.id, { revision: 1, content: '人工核实后的会议纪要' });
+  assert.equal(edited.revision, 2); assert.equal(edited.status, '待审核'); assert.equal(edited.reviewedAt, null); assert.equal(edited.reviewer, null);
+  assert.equal(edited.originalContent, doc.originalContent); assert.equal(edited.reviews.length, 1);
+  assert.throws(() => client.exportDocument(doc.id), /人工确认/);
+  assert.throws(() => client.updateDocument(doc.id, { revision: 1, content: '过期编辑' }), error => error.status === 409);
+  assert.throws(() => client.reviewDocument(doc.id, { revision: 1, confirmed: true, quality: '可用' }), error => error.status === 409);
+  const reapproved = client.reviewDocument(doc.id, { revision: 2, confirmed: true, quality: '需修改', reviewNote: '评价的是原始初稿。' });
+  assert.equal(reapproved.reviews.length, 2); assert.equal(client.exportDocument(doc.id).content, edited.content);
+  assert.deepEqual(client.state().metrics, { reviewedCount: 1, usableCount: 0, usableRate: 0 });
+  const second = await generate(); client.reviewDocument(second.id, { revision: 1, confirmed: true, quality: '可用' });
+  assert.deepEqual(client.state().metrics, { reviewedCount: 2, usableCount: 1, usableRate: 0.5 });
+});
+
+test('模型调用单并发、超时覆盖响应正文，错误不带上游正文或密钥、不自动重试', async t => {
+  let resolveFetch; const { client, configure } = await fixture(t, { timeoutMs: 40, fetchImpl: () => new Promise(resolve => { resolveFetch = resolve; }) }); configure();
+  const active = client.testConnection({ consent: true });
+  await assert.rejects(client.testConnection({ consent: true }), error => error.status === 409);
+  resolveFetch({ ok: true, headers: new Headers(), text: () => new Promise(() => {}) });
+  await assert.rejects(active, error => error.status === 504 && !error.message.includes(apiKey));
+  const variants = [
+    async () => new Response(apiKey + ' secret upstream detail', { status: 401 }),
+    async () => { throw new Error(apiKey); },
+    async () => new Response(apiKey),
+    async () => new Response(JSON.stringify({ choices: [{ message: { content: '' } }] })),
+    async () => new Response(JSON.stringify({ choices: [{ message: { content: '字'.repeat(60001) } }] }))
+  ];
+  for (const fetchImpl of variants) {
+    let calls = 0; const fixtureValue = await fixture(t, { fetchImpl: async (...args) => { calls++; return fetchImpl(...args); } }); fixtureValue.configure();
+    await assert.rejects(fixtureValue.generate(), error => error.status === 502 && !error.message.includes(apiKey) && !error.message.includes('secret upstream detail'));
+    assert.equal(calls, 1); assert.equal(fixtureValue.client.state().documents.length, 0);
+  }
+});
+
+test('响应大小限制覆盖标头和流式正文，关闭立即中断等待，不在关闭后落库', async t => {
+  for (const fetchImpl of [
+    async () => new Response('{}', { headers: { 'content-length': '1048577' } }),
+    async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(1048577)); controller.close(); } }))
+  ]) {
+    const value = await fixture(t, { fetchImpl }); value.configure(); await assert.rejects(value.generate(), /大小限制/);
+  }
+  let release;
+  const { client, configure, generate } = await fixture(t, { timeoutMs: 60000, fetchImpl: () => new Promise(resolve => { release = resolve; }) }); configure();
+  const pending = generate(); const rejected = assert.rejects(pending, error => error.status === 503);
+  await client.close(); await rejected;
+  release(chatResponse()); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(client.state().documents.length, 0);
+  assert.throws(() => client.updateSettings({ model: 'other' }), /关闭/);
+});
+
+test('任务在等待生成期间被删除则拒绝落库，已生成文档的来源不会随任务删除消失', async t => {
+  let release;
+  const { client, configure, store, material } = await fixture(t, { fetchImpl: () => new Promise(resolve => { release = resolve; }) }); configure();
+  const task = store.createTask(taskInput); const saved = material();
+  const pending = client.generate({ title: '初稿', templateId: 'builtin-minutes', taskId: task.id, materialIds: [saved.id], consent: true });
+  store.deleteTask(task.id); release(chatResponse()); await assert.rejects(pending, /回收站/);
+  assert.equal(client.state().documents.length, 0);
+});
+
+test('语音转写使用独立模型和真正 multipart，需同意且不自动保存素材', async t => {
+  const requests = [];
+  const { client, configure } = await fixture(t, { fetchImpl: async (url, request) => { requests.push({ url, ...request }); return new Response(JSON.stringify({ text: '  虚构录音转写，时间仍需核对。  ' })); } }); configure();
+  const wav = Buffer.alloc(44); wav.write('RIFF'); wav.write('WAVE', 8);
+  const file = { name: '虚构测试.wav', contentBase64: wav.toString('base64') };
+  await assert.rejects(client.transcribe({ file }), /同意/);
+  client.updateSettings({ transcriptionModel: '' });
+  await assert.rejects(client.transcribe({ file, consent: true }), /独立的语音转写模型/);
+  client.updateSettings({ transcriptionModel: 'fake-audio' });
+  const result = await client.transcribe({ file, consent: true });
+  assert.equal(result.text, '虚构录音转写，时间仍需核对。'); assert.equal(result.name, file.name);
+  assert.equal(requests[0].url, 'http://localhost:11434/v1/audio/transcriptions');
+  assert.equal(requests[0].redirect, 'error'); assert.ok(requests[0].body instanceof FormData);
+  assert.equal(requests[0].body.get('model'), 'fake-audio'); assert.equal(requests[0].body.get('response_format'), 'json');
+  assert.equal(requests[0].body.get('file').name, file.name); assert.equal(Object.hasOwn(requests[0].headers, 'Content-Type'), false);
+  assert.equal(client.state().materials.length, 0);
+});
