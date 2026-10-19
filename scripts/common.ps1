@@ -26,6 +26,7 @@ function Read-PlatformEnvironment {
     foreach ($line in (Get-Content -LiteralPath (Join-Path $ProjectRoot '.env'))) {
         if ($line -match '^([A-Z_][A-Z0-9_]*)=([A-Za-z0-9_-]+)$') { $values[$matches[1]] = $matches[2] }
     }
+    if ($env:SERVERCHAN_SENDKEY) { $values.SERVERCHAN_SENDKEY = $env:SERVERCHAN_SENDKEY }
     if (-not $values.AUTOMATION_KEY -or -not $values.N8N_ENCRYPTION_KEY) { throw '本地 .env 缺少调度密钥，请检查文件；已有数据时请勿直接删除原密钥。' }
     return $values
 }

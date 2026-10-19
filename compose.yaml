@@ -11,6 +11,7 @@ services:
       SCHEDULER: external
       AUTOMATION_KEY: ${AUTOMATION_KEY:?请先运行启动脚本生成本地密钥}
       SEED_DEMO: ${SEED_DEMO:-1}
+      SERVERCHAN_SENDKEY: ${SERVERCHAN_SENDKEY:-}
     ports:
       - "127.0.0.1:3080:3080"
     volumes:

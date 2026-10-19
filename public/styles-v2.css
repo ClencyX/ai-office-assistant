@@ -228,6 +228,36 @@ tbody tr:hover { background: #fcfdff; }
 .reminder-meta { font-size: 11px; color: #9ba7b7; display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }
 .reminder-actions { display: flex; align-items: center; gap: 13px; flex-shrink: 0; }
 .read-label { font-size: 12px; color: #9eabbc; }
+.serverchan-panel { margin-bottom: 22px; }
+.serverchan-body { padding: 0 23px 22px; }
+.serverchan-description, .serverchan-unavailable { color: #8291a5; font-size: 12px; line-height: 1.9; }
+.serverchan-unavailable { padding: 0 23px 22px; }
+.serverchan-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin: 21px 0; }
+.serverchan-summary dt { font-size: 11px; color: #98a3b2; margin-bottom: 8px; }
+.serverchan-summary dd { margin: 0; font-size: 12px; color: #6f819b; line-height: 1.8; overflow-wrap: anywhere; }
+.serverchan-result { color: #7e91a9; font-size: 12px; line-height: 1.8; border-top: 1px solid var(--line); padding-top: 14px; margin-bottom: 17px; }
+.serverchan-result p { font-size: 11px; margin-top: 5px; overflow-wrap: anywhere; }
+.serverchan-result.is-failed, .serverchan-history .is-failed { color: #b17765; }
+.serverchan-actions { flex-wrap: wrap; }
+.serverchan-footnote { color: #9aa5b5; font-size: 11px; line-height: 1.9; margin-top: 15px; }
+.serverchan-history { border-top: 1px solid var(--line); padding-top: 15px; margin-top: 18px; }
+.serverchan-history summary { color: #8294ac; font-size: 12px; cursor: pointer; }
+.serverchan-history ul { list-style: none; padding: 0; margin: 8px 0 0; }
+.serverchan-history li { border-bottom: 1px solid var(--line); padding: 12px 0; font-size: 11px; color: #91a0b2; line-height: 1.8; }
+.serverchan-history li:last-child { border-bottom: 0; }
+.serverchan-history li > div { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.serverchan-history li p { margin-top: 4px; overflow-wrap: anywhere; }
+.serverchan-history time { white-space: nowrap; color: #a0acbb; }
+.serverchan-setup { padding: 14px 16px; border: 1px solid #e3e8ef; border-radius: 4px; background: #f7f9fc; color: #8294ab; font-size: 12px; line-height: 1.9; margin-bottom: 23px; }
+.serverchan-setup a { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
+.serverchan-toggle { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #637a99; line-height: 1.8; margin: 0 0 22px; }
+.serverchan-toggle input { accent-color: var(--blue); width: 16px; height: 16px; }
+.serverchan-disclosure { color: #8d9db2; font-size: 12px; line-height: 1.9; margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
+.serverchan-key-actions { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 18px; }
+.serverchan-key-actions > .danger { color: #b17765; font-size: 12px; }
+.serverchan-clear-confirm { margin-top: 13px; padding: 13px; border: 1px solid #eddcd6; border-radius: 4px; background: #fcf8f6; }
+.serverchan-clear-confirm p { color: #ac8071; font-size: 12px; line-height: 1.8; margin-bottom: 12px; }
+#serverchan-form input:disabled { background: #f6f8fa; color: #9aa7b8; }
 .settings-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 22px; align-items: start; }
 .settings-body { padding: 0 23px 23px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 19px; }
@@ -349,6 +379,10 @@ tbody tr:hover { background: #fcfdff; }
   .reminder-card { padding: 19px 16px; gap: 12px; flex-wrap: wrap; }
   .reminder-content { min-width: 220px; }
   .reminder-actions { margin-left: 31px; }
+  .serverchan-body { padding-left: 16px; padding-right: 16px; }
+  .serverchan-unavailable { padding-left: 16px; padding-right: 16px; }
+  .serverchan-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px; }
+  .serverchan-actions .button { font-size: 12px; padding: 8px 11px; }
   .settings-body { padding-left: 16px; padding-right: 16px; }
   .drawer-header, .drawer-body, .drawer-footer { padding-left: 20px; padding-right: 20px; }
   .toast-root { left: 50%; width: calc(100% - 32px); bottom: 18px; }

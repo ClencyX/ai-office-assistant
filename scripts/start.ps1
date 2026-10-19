@@ -33,6 +33,7 @@ try {
         $env:SCHEDULER = 'internal'
         $env:TZ = 'Asia/Shanghai'
         $env:SEED_DEMO = $values.SEED_DEMO
+        $env:SERVERCHAN_SENDKEY = $values.SERVERCHAN_SENDKEY
         $serverPath = Join-Path $ProjectRoot 'server.mjs'
         $running = Start-Process -FilePath $nodePath -ArgumentList @('--no-warnings',('"' + $serverPath + '"')) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $DataRoot 'logs\application.log') -RedirectStandardError (Join-Path $DataRoot 'logs\application-error.log')
         @{pid=$running.Id;server=$serverPath;startedAt=$running.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $DataRoot 'local-process.json') -Encoding UTF8
