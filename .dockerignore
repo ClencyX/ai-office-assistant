@@ -1,0 +1,14 @@
+data
+.qa-data
+backups
+.env
+.git
+node_modules
+test
+scripts
+workflows
+*.log
+*.tmp
+*.tmp.html
+*.md
+*.cmd

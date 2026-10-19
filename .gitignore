@@ -1,0 +1,28 @@
+# 本机密钥及运行数据
+.env
+.env.*
+!.env.example
+data/
+.qa-data/
+backups/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# 依赖、编辑器及临时文件
+node_modules/
+.idea/
+.vscode/
+*.log
+*.tmp
+*.tmp.html
+.DS_Store
+Thumbs.db
+
+# 本机验收截图和内部工作记录
+/预览/
+/验收记录.md
+/本次改动约定.md

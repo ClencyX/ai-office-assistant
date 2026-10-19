@@ -1,0 +1,40 @@
+{
+  "id": "officePhaseOneSchedule",
+  "name": "办公平台｜固定任务生成与到期提醒",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{ "field": "minutes", "minutesInterval": 1 }] } },
+      "id": "officeMinuteTrigger",
+      "name": "每分钟检查一次",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://application:3080/api/automation/run",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "officeRunScheduler",
+      "name": "生成固定任务并发送站内提醒",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [540, 300],
+      "credentials": { "httpHeaderAuth": { "id": "officeAutomationHeader", "name": "办公平台内部调度密钥" } },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": { "每分钟检查一次": { "main": [[{ "node": "生成固定任务并发送站内提醒", "type": "main", "index": 0 }]] } },
+  "settings": { "executionOrder": "v1", "timezone": "Asia/Shanghai" },
+  "pinData": {},
+  "tags": []
+}
