@@ -2,6 +2,8 @@ data
 .qa-data
 backups
 .env
+serverchan.json
+serverchan.json.*
 .git
 node_modules
 test

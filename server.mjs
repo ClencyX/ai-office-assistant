@@ -7,6 +7,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { OfficeStore } from './lib/office.mjs';
 import { InputError } from './lib/csv.mjs';
+import { ServerChanService } from './lib/serverchan.mjs';
 
 const projectDir = dirname(fileURLToPath(import.meta.url));
 const mimeTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
@@ -41,7 +42,9 @@ export function createApplication(options = {}) {
   const automationKey = options.automationKey ?? process.env.AUTOMATION_KEY ?? '';
   const publicDir = resolve(options.publicDir ?? join(projectDir, 'public'));
   const store = new OfficeStore({ databasePath: join(dataDir, 'office.sqlite'), seedDemo: options.seedDemo ?? process.env.SEED_DEMO !== '0', scheduler, ...(options.now ? { now: options.now } : {}) });
+  const serverchan = new ServerChanService({ store, dataDir, sendKey: options.serverChanSendKey ?? process.env.SERVERCHAN_SENDKEY ?? '', ...(options.serverChanFetch ? { fetchImpl: options.serverChanFetch } : {}), ...(options.serverChanTimeoutMs ? { timeoutMs: options.serverChanTimeoutMs } : {}) });
   let timer; let closed = false;
+  const runTasks = async actor => ({ ...store.run(actor), serverchan: await serverchan.runScheduled() });
   const localNames = new Set(['localhost', '127.0.0.1', '[::1]', ...(host === '0.0.0.0' || host === '::' ? [] : [host])]);
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff'); response.setHeader('X-Frame-Options', 'DENY'); response.setHeader('Referrer-Policy', 'no-referrer');
@@ -54,7 +57,8 @@ export function createApplication(options = {}) {
       if (pathname.startsWith('/api/')) {
         if (method === 'GET') {
           if (pathname === '/api/health') return json(response, 200, { ok: true });
-          if (pathname === '/api/state') return json(response, 200, store.state());
+          if (pathname === '/api/state') return json(response, 200, { ...store.state(), serverchan: serverchan.snapshot() });
+          if (pathname === '/api/serverchan') return json(response, 200, { serverchan: serverchan.snapshot() });
           if (pathname === '/api/trash') return json(response, 200, store.trash());
           const attachmentMatch = pathname.match(/^\/api\/attachments\/([^/]+)$/);
           if (attachmentMatch) {
@@ -79,6 +83,12 @@ export function createApplication(options = {}) {
         const completeMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/complete$/);
         checkWrite(request, automationKey, isAutomation); const body = await readJson(request, method === 'POST' && completeMatch ? 36 * 1024 * 1024 : 2 * 1024 * 1024);
         if (method === 'POST' && completeMatch) return json(response, 200, { task: store.completeTask(decodeURIComponent(completeMatch[1]), body) });
+        if (method === 'PATCH' && pathname === '/api/serverchan/settings') return json(response, 200, { serverchan: serverchan.updateSettings(body) });
+        if (method === 'POST' && pathname === '/api/serverchan/test') return json(response, 200, { result: await serverchan.sendTest(), serverchan: serverchan.snapshot() });
+        if (method === 'POST' && pathname === '/api/serverchan/send') {
+          if (Object.hasOwn(body, 'retry') && typeof body.retry !== 'boolean') throw new InputError('重试参数必须为布尔值。');
+          return json(response, 200, { result: await serverchan.sendToday({ retry: body.retry === true }), serverchan: serverchan.snapshot() });
+        }
         if (method === 'POST' && pathname === '/api/tasks') return json(response, 201, { task: store.createTask(body) });
         const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
         if (method === 'PATCH' && taskMatch) return json(response, 200, { task: store.updateTask(decodeURIComponent(taskMatch[1]), body) });
@@ -91,7 +101,7 @@ export function createApplication(options = {}) {
         if (method === 'PATCH' && templateMatch) return json(response, 200, { template: store.updateTemplate(decodeURIComponent(templateMatch[1]), body) });
         if (method === 'POST' && pathname === '/api/reminders/read') return json(response, 200, store.readReminders(body));
         if (method === 'PATCH' && pathname === '/api/settings') return json(response, 200, store.updateSettings(body));
-        if (method === 'POST' && (pathname === '/api/run' || isAutomation)) return json(response, 200, store.run(isAutomation ? '工作流调度' : store.settings().adminName));
+        if (method === 'POST' && (pathname === '/api/run' || isAutomation)) return json(response, 200, await runTasks(isAutomation ? '工作流调度' : store.settings().adminName));
         throw new InputError('未找到该接口。', 404);
       }
       if (!['GET', 'HEAD'].includes(method)) throw new InputError('不支持该请求方式。', 405);
@@ -117,16 +127,19 @@ export function createApplication(options = {}) {
   });
   server.requestTimeout = 30_000; server.headersTimeout = 15_000;
   return {
-    server, store, host, port, dataDir,
+    server, store, serverchan, host, port, dataDir,
     async start() {
       store.run();
       await new Promise((resolveStart, rejectStart) => { server.once('error', rejectStart); server.listen(port, host, () => { server.removeListener('error', rejectStart); resolveStart(); }); });
-      if (scheduler !== 'external') { timer = setInterval(() => { try { store.run(); } catch (error) { console.error('自动检查失败：', error); } }, 60_000); timer.unref(); }
+      await serverchan.runScheduled();
+      if (scheduler !== 'external') { timer = setInterval(() => { runTasks().catch(error => console.error('自动检查失败：', error instanceof InputError ? error.message : '请检查本地服务状态。')); }, 60_000); timer.unref(); }
       return server.address();
     },
     async close() {
       if (closed) return; closed = true; clearInterval(timer);
-      if (server.listening) await new Promise((resolveClose, rejectClose) => server.close(error => error ? rejectClose(error) : resolveClose()));
+      const closingServer = server.listening ? new Promise((resolveClose, rejectClose) => server.close(error => error ? rejectClose(error) : resolveClose())) : Promise.resolve();
+      await serverchan.close();
+      await closingServer;
       store.close();
     }
   };
