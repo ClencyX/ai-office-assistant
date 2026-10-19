@@ -148,7 +148,7 @@ async function serverchanRequest(kind,button){
   }finally{serverchanBusy=false;restore();}
 }
 
-function openDrawer(title,body,footer='',layout='side'){
+function openDrawer(title,body,footer='',layout='center'){
   completionDraft=null;
   if(!document.querySelector('.drawer'))focusBeforeModal=document.activeElement;
   document.querySelector('#overlay-root').innerHTML=`<div class="overlay${layout==='center'?' overlay-centered':''}"><section class="drawer${layout==='center'?' drawer-centered':''}" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1"><div class="drawer-header"><h2 id="drawer-title">${title}</h2>${action('close',icon('close'),'icon-btn','aria-label="关闭窗口"')}</div><div class="drawer-body">${body}</div>${footer?`<div class="drawer-footer">${footer}</div>`:''}</section></div>`;

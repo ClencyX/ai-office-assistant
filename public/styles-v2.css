@@ -166,7 +166,8 @@ tbody tr:hover { background: #fcfdff; }
 .trash-item { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 0; border-bottom: 1px solid var(--line); }
 .trash-item > div { min-width: 0; }
 .trash-item h3 { font-size: 14px; font-weight: 500; line-height: 1.8; color: #50657f; overflow-wrap: anywhere; }
-.trash-item p { margin-top: 5px; font-size: 12px; color: #8c9aaf; line-height: 1.7; }
+.trash-item p { margin-top: 5px; font-size: 12px; color: #8c9aaf; line-height: 1.7; overflow-wrap: anywhere; }
+.trash-item > .button { flex-shrink: 0; }
 .table-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; color: #929ba7; padding: 14px 23px; border-top: 1px solid var(--line); }
 .table-footer svg { display: none; }
 .notice-list { padding: 0 23px; }
@@ -283,6 +284,7 @@ tbody tr:hover { background: #fcfdff; }
 .overlay-centered { justify-content: center; align-items: center; padding: 24px; }
 .drawer-centered { width: 720px; height: auto; max-height: calc(100dvh - 48px); border: 1px solid #e2e7ee; border-radius: 10px; box-shadow: 0 20px 64px #14283c26; overflow: hidden; }
 .drawer-centered .drawer-header, .drawer-centered .drawer-footer { flex-shrink: 0; }
+.drawer-centered .drawer-footer { flex-wrap: wrap; }
 .drawer-centered .drawer-body { min-height: 0; }
 @media (max-width: 560px) {
   .overlay-centered { padding: 16px; }
@@ -290,9 +292,10 @@ tbody tr:hover { background: #fcfdff; }
   .drawer-centered .form-grid { grid-template-columns: 1fr; }
 }
 .detail-title { font-size: 22px; font-weight: 500; line-height: 1.7; color: #3e5a81; overflow-wrap: anywhere; margin: 17px 0 23px; }
-.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 23px; padding-bottom: 23px; margin: 24px 0; border-bottom: 1px solid var(--line); }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 23px; padding-bottom: 23px; margin: 24px 0; border-bottom: 1px solid var(--line); }
+.detail-grid > div { min-width: 0; }
 .detail-grid dt { font-size: 12px; color: #97a6bc; margin-bottom: 8px; }
-.detail-grid dd { font-size: 13px; color: #7187a7; margin: 0; }
+.detail-grid dd { font-size: 13px; color: #7187a7; margin: 0; overflow-wrap: anywhere; }
 .detail-section { margin: 24px 0; }
 .detail-section h3 { font-size: 13px; color: #7d92b0; font-weight: 500; margin-bottom: 12px; }
 .detail-section p { font-size: 13px; color: #7b90ae; line-height: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
