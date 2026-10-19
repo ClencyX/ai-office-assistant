@@ -280,6 +280,15 @@ tbody tr:hover { background: #fcfdff; }
 .drawer-header h2 { font-size: 18px; font-weight: 500; color: #435d7f; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 25px 28px; }
 .drawer-footer { padding: 19px 28px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.overlay-centered { justify-content: center; align-items: center; padding: 24px; }
+.drawer-centered { width: 720px; height: auto; max-height: calc(100dvh - 48px); border: 1px solid #e2e7ee; border-radius: 10px; box-shadow: 0 20px 64px #14283c26; overflow: hidden; }
+.drawer-centered .drawer-header, .drawer-centered .drawer-footer { flex-shrink: 0; }
+.drawer-centered .drawer-body { min-height: 0; }
+@media (max-width: 560px) {
+  .overlay-centered { padding: 16px; }
+  .drawer-centered { max-height: calc(100dvh - 32px); border-radius: 8px; }
+  .drawer-centered .form-grid { grid-template-columns: 1fr; }
+}
 .detail-title { font-size: 22px; font-weight: 500; line-height: 1.7; color: #3e5a81; overflow-wrap: anywhere; margin: 17px 0 23px; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 23px; padding-bottom: 23px; margin: 24px 0; border-bottom: 1px solid var(--line); }
 .detail-grid dt { font-size: 12px; color: #97a6bc; margin-bottom: 8px; }
