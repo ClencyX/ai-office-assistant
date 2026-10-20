@@ -27,7 +27,7 @@ async function fixture(t, options = {}) {
 
 test('AI 默认关闭，配置独立原子保存、密钥不返回且不进入 SQLite 备份', async t => {
   const { dir, store, client, service, requests } = await fixture(t);
-  assert.deepEqual(client.state().settings, { enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', transcriptionModel: '', keyConfigured: false, configError: null });
+  assert.deepEqual(client.state().settings, { enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', transcriptionModel: '', visionModel: '', keyConfigured: false, configError: null });
   assert.equal(client.state().templates.length, 3);
   assert.deepEqual(client.state().metrics, { reviewedCount: 0, usableCount: 0, usableRate: null });
   await assert.rejects(client.generate({ consent: true }), /尚未启用/);
