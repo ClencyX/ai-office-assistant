@@ -31,8 +31,9 @@
 .ai-note { background: #f7f9fc; border: 1px solid #e2e7ef; border-radius: 5px; padding: 13px 15px; color: #64778e; font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
 .ai-note strong { font-weight: 500; color: #465e7c; }
 .ai-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: #687c97; line-height: 1.8; }
-.ai-check input { flex-shrink: 0; margin: 5px 0 0; width: 15px; height: 15px; accent-color: var(--blue); }
-.ai-check span { min-width: 0; overflow-wrap: anywhere; }
+.ai-check input[type="checkbox"] { flex: 0 0 15px; margin: 5px 0 0; width: 15px; height: 15px; min-width: 15px; min-height: 15px; padding: 0; accent-color: var(--blue); }
+.ai-check span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.field .ai-check { align-items: flex-start; gap: 10px; }
 .ai-settings-dialog [hidden] { display: none !important; }
 .ai-settings-dialog .drawer-body { padding-top: 20px; padding-bottom: 8px; }
 .ai-settings-intro { color: #7d8c9e; font-size: 13px; line-height: 1.8; margin: 0 0 20px; }
