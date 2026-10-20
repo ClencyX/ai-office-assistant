@@ -104,6 +104,7 @@ export function createApplication(options = {}) {
         if (method === 'POST' && pathname === '/api/ai/test') return json(response, 200, await ai.testConnection(body));
         if (method === 'POST' && pathname === '/api/ai/import') return json(response, 200, extractTextFile(body.file));
         if (method === 'POST' && pathname === '/api/ai/transcribe') return json(response, 200, await ai.transcribe(body));
+        if (method === 'POST' && pathname === '/api/ai/templates/analyze') return json(response, 200, { suggestion: await ai.analyzeTemplate(body) });
         if (method === 'POST' && pathname === '/api/ai/templates') return json(response, 201, { template: ai.saveTemplate(body) });
         const aiTemplateMatch = pathname.match(/^\/api\/ai\/templates\/([^/]+)$/);
         if (method === 'PATCH' && aiTemplateMatch) return json(response, 200, { template: ai.saveTemplate(body, decodeURIComponent(aiTemplateMatch[1])) });

@@ -89,6 +89,12 @@
 .ai-audio { border-top: 1px solid var(--line); padding-top: 18px; }
 .ai-audio summary, .ai-history summary { cursor: pointer; color: #5e7594; font-size: 13px; line-height: 1.8; }
 .ai-audio > .ai-form-stack { margin-top: 18px; }
+.ai-template-assist { border: 1px solid #e2e7ef; border-radius: 5px; padding: 13px 15px; }
+.ai-template-assist > summary { cursor: pointer; color: #526d90; font-size: 13px; line-height: 1.8; }
+.ai-template-assist > .ai-form-stack { margin-top: 16px; }
+.ai-template-suggestion { border-top: 1px solid var(--line); padding-top: 18px; }
+.ai-template-suggestion[hidden] { display: none; }
+.ai-template-suggestion input[readonly], .ai-template-suggestion textarea[readonly] { background: #f8fafc; color: #64778e; }
 .ai-fieldset { min-width: 0; border: 1px solid #e0e6ee; border-radius: 5px; margin: 0; padding: 12px 15px 15px; }
 .ai-fieldset legend { font-size: 13px; color: #647a98; padding: 0 6px; }
 .ai-choices { display: flex; flex-direction: column; gap: 10px; max-height: 230px; overflow-y: auto; }

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApplication } from '../server.mjs';
-import { extractTextFile } from '../lib/ai-files.mjs';
+import { createDocx, extractTextFile } from '../lib/ai-files.mjs';
 
 const key = 'only-a-synthetic-ai-key';
 const draft = '# 会议纪要\n\n## 会议情况\n2026年10月20日，甲主持会议。\n\n## 决议事项\n| 事项 | 负责人 |\n| --- | --- |\n| 核对台账 | 乙 |\n\n## 数据来源对照\n会议记录。\n\n## 待核实事项\n具体截止日期【待核实】。';
@@ -22,7 +22,7 @@ test('AI 接口沿用同源写入保护，未配置不请求上游，素材导�
   const { base, send, calls } = await fixture(t);
   const initial = await (await fetch(base + '/api/ai')).json();
   assert.equal(initial.settings.enabled, false); assert.equal(initial.templates.length, 3);
-  for (const [path, method] of [['/api/ai/settings', 'PATCH'], ['/api/ai/test', 'POST'], ['/api/ai/materials', 'POST'], ['/api/ai/documents', 'POST'], ['/api/ai/transcribe', 'POST']]) {
+  for (const [path, method] of [['/api/ai/settings', 'PATCH'], ['/api/ai/test', 'POST'], ['/api/ai/materials', 'POST'], ['/api/ai/documents', 'POST'], ['/api/ai/transcribe', 'POST'], ['/api/ai/templates/analyze', 'POST']]) {
     assert.equal((await send(path, {}, method, { Origin: 'https://unrelated.invalid' })).status, 403);
     assert.equal((await send(path, {}, method, { 'Sec-Fetch-Site': 'same-site' })).status, 403);
     assert.equal((await send(path, {}, method, { 'Content-Type': 'text/plain' })).status, 415);
@@ -49,6 +49,35 @@ test('文档模板接口不要求文档类型，新增和编辑自定义名称�
   assert.equal(state.templates.find(value => value.id === template.id).name, '年度培训总结');
   assert.ok(state.templates.every(value => !Object.hasOwn(value, 'kind')));
   assert.equal(calls.length, 0);
+});
+
+test('历史 Word 本机提取后显式识别模板，建议应用保存前不改变资料库', async t => {
+  const { base, send, calls, configure } = await fixture(t);
+  const history = createDocx('历史培训总结', '# 一、培训概况\n虚构的往期培训记录。\n# 二、培训成效\n课程内容、参与情况与改进计划。');
+  const imported = await send('/api/ai/import', { file: { name: '历史培训总结.docx', contentBase64: history.toString('base64') } });
+  assert.equal(imported.status, 200);
+  const source = await imported.json();
+  assert.match(source.content, /一、培训概况/);
+  assert.equal(calls.length, 0);
+  assert.equal((await send('/api/ai/templates/analyze', { ...source, consent: true })).status, 409);
+  assert.equal((await configure()).status, 200);
+  const before = await (await fetch(base + '/api/ai')).json();
+  assert.equal((await send('/api/ai/templates/analyze', { ...source, consent: false })).status, 400);
+  assert.equal(calls.length, 0);
+  const analyzed = await send('/api/ai/templates/analyze', { ...source, consent: true });
+  assert.equal(analyzed.status, 200);
+  const { suggestion } = await analyzed.json();
+  assert.match(suggestion.name, /培训总结/);
+  assert.equal(suggestion.content, draft);
+  assert.doesNotMatch(JSON.stringify(suggestion), new RegExp(key));
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].init.body, /培训概况/);
+  const after = await (await fetch(base + '/api/ai')).json();
+  assert.deepEqual(after, before);
+  const saved = await send('/api/ai/templates', suggestion);
+  assert.equal(saved.status, 201);
+  assert.equal((await saved.json()).template.content, suggestion.content);
+  assert.equal(calls.length, 1);
 });
 
 test('真实接口形态的隔离调用完成初稿、版本审核、Word 导出并提交任务，密钥不回显', async t => {

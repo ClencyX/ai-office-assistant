@@ -261,9 +261,9 @@ document.addEventListener('click',async e=>{
     if(a==='run'){const r=await api('/api/run',{method:'POST',body:'{}'});await refresh();toast(`检查完成：生成 ${r.generated} 项任务，新增 ${r.reminded} 条提醒`);}
   }catch(error){toast(error.message,true);}finally{button.disabled=false;}
 });
-document.addEventListener('input',e=>{if(e.target.id==='task-search'){query=e.target.value;taskPage=1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}if(e.target.closest('#ai-document-form'))ai.input();});
+document.addEventListener('input',e=>{if(e.target.id==='task-search'){query=e.target.value;taskPage=1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}if(e.target.closest('#ai-document-form,#ai-template-form'))ai.input(e.target);});
 document.addEventListener('change',async e=>{
-  if(e.target.id==='ai-material-file'){await ai.change(e.target);return;}
+  if(e.target.id==='ai-material-file'||e.target.id==='ai-template-file'){await ai.change(e.target);return;}
   if(e.target.id==='owner-filter'||e.target.id==='submission-filter'){if(e.target.id==='owner-filter')ownerFilter=e.target.value;else submissionFilter=e.target.value;taskPage=1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}
   if(e.target.id==='task-page-select'){taskPage=Number(e.target.value)||1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}
   if(e.target.id==='completion-files')addCompletionFiles(e.target);

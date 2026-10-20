@@ -35,12 +35,12 @@ export function createAiOffice(ui) {
     const el=form?.querySelector('.form-error');
     if(el){el.textContent=error.message;el.scrollIntoView({block:'nearest'});}else toast(error.message,true);
   }
-  async function request(form,label,fn) {
+  async function request(form,label,fn,trigger=null) {
     if(busy)return null;
     const err=form?.querySelector('.form-error');if(err)err.textContent='';
     const controls=[...document.querySelectorAll('.drawer button,.drawer input,.drawer select,.drawer textarea')];
     const prior=controls.map(el=>el.disabled);
-    const submitter=form?document.querySelector(`button[form="${form.id}"][type="submit"]`)||form.querySelector('[type="submit"]'):null;
+    const submitter=trigger||(form?document.querySelector(`button[form="${form.id}"][type="submit"]`)||form.querySelector('[type="submit"]'):null);
     const oldText=submitter?.textContent;
     busy=true;controls.forEach(el=>el.disabled=true);
     document.querySelector('.drawer')?.setAttribute('aria-busy','true');
@@ -85,7 +85,40 @@ export function createAiOffice(ui) {
     openDrawer(m.id?'编辑素材':'添加素材',`<form id="ai-material-form" data-id="${esc(m.id||'')}">${errorBox}<div class="ai-form-stack">${textField('资料名称','title',m.title,'required maxlength="200"')}<div class="form-grid"><div class="field"><label for="ai-kind">资料类型</label><select id="ai-kind" name="kind">${['素材','历史样例'].map(v=>option(v,m.kind||'素材')).join('')}</select><span class="hint">历史样例仅供格式参考，不应当作本次事实。</span></div>${taskSelect(m.taskId)}</div><div class="ai-import"><label for="ai-material-file">从文件导入正文</label><input id="ai-material-file" type="file" accept=".txt,.md,.csv,.docx"><p>支持文本、Markdown、表格文本和 Word，文件不超过 1 兆。仅在本机提取，选择文件后会替换下方正文。</p></div>${textArea('素材正文','content',m.content,'required maxlength="20000" rows="12" placeholder="粘贴会议记录、事实数据或历史样例正文"')}<details class="ai-audio"><summary>录音转写为素材（选用）</summary><div class="ai-form-stack"><p>转写服务：<strong>${esc(endpoint())}</strong><br>转写模型：${esc(s.transcriptionModel||'尚未配置，请先在模型设置中填写')}</p><input id="ai-audio-file" type="file" accept=".mp3,.wav,.m4a,.webm,.mp4,.ogg,.flac" aria-label="选择录音文件"><p class="hint">最大 20 兆。录音会发往上述服务；转写结果追加到正文，核对后点击保存。</p><label class="ai-check"><input id="ai-audio-consent" type="checkbox"><span>我同意将所选录音发送给上述服务进行转写</span></label>${button('transcribe','开始转写','button small',`${!s.transcriptionModel||!s.enabled?'disabled':''}`)}</div></details></div></form>`,`${action('close','取消','button')}${submit('ai-material-form','保存素材')}`);
   }
   function templateForm(t={}) {
-    openDrawer(t.id?'编辑文档模板':'新建文档模板',`<form id="ai-template-form" data-id="${esc(t.id||'')}">${errorBox}<div class="ai-form-stack">${textField('模板名称','name',t.name,'required maxlength="100" placeholder="例如：培训总结、工作汇报"')}${textArea('结构与写作要求','content',t.content,'required maxlength="20000" rows="15" placeholder="填写章节结构、语气与内容要求。不要在模板中写入本次未经核对的事实。"')}<p class="hint">本次生成使用的模板会随文档保存，后续修改模板不影响历史文档。</p></div></form>`,`${action('close','取消','button')}${submit('ai-template-form','保存模板')}`);
+    editor=null;
+    openDrawer(t.id?'编辑文档模板':'新建文档模板',`<form id="ai-template-form" data-id="${esc(t.id||'')}">${errorBox}<div class="ai-form-stack"><details class="ai-template-assist"><summary>从历史文档识别（选用）</summary><div class="ai-form-stack"><p class="hint">提交一份历史文档，自动整理章节结构、下次写作需要补充的信息和写作要求。识别结果由你确认后再应用。</p><div class="ai-import"><label for="ai-template-file">选择历史文档</label><input id="ai-template-file" type="file" accept=".txt,.md,.csv,.docx"><p>支持 Word（.docx）、文本、Markdown 和表格文本，文件不超过 1 兆。仅在本机提取，选择文件后替换下方历史正文；也可直接粘贴。</p></div>${textField('历史文档名称（选填）','historyTitle','','maxlength="200" placeholder="例如：上月培训总结"')}${textArea('历史文档正文','historyContent','','maxlength="20000" rows="8" placeholder="导入文件或在这里粘贴正文，发送前请核对内容，最多 20000 字。"')}<div class="ai-note">发送至：<strong>${esc(endpoint())}</strong><br>使用模型：<strong>${esc(state.settings.model||'尚未配置')}</strong><br>仅发送此处的历史文档名称与正文，用于识别模板；不会自动保存历史文档。</div>${!ready()?'<p class="hint">请先关闭此窗口，在「模型设置」中配置并启用文档模型，再使用识别功能。也可直接填写下方模板。</p>':''}<label class="ai-check"><input id="ai-template-consent" type="checkbox"><span>我已核对历史正文，同意发送给上述模型服务识别结构与待补充内容</span></label><div>${button('template-analyze','识别结构与待补充内容','button small',!ready()?'disabled':'')}</div><section id="ai-template-suggestion" class="ai-template-suggestion" hidden><div class="ai-form-stack"><p class="ai-note">识别完成。请检查建议是否准确；点击「应用到模板」会替换下方模板名称与结构内容，仍需保存模板才会生效。</p>${textField('建议模板名称','suggestionName','','readonly')}${textArea('建议结构、待补充内容与写作要求','suggestionContent','','readonly rows="10"')}<div>${button('template-apply','应用到模板','button small primary')}</div></div></section></div></details>${textField('模板名称','name',t.name,'required maxlength="100" placeholder="例如：培训总结、工作汇报"')}${textArea('结构与写作要求','content',t.content,'required maxlength="20000" rows="15" placeholder="填写章节结构、语气与内容要求。不要在模板中写入本次未经核对的事实。"')}<p class="hint">本次生成使用的模板会随文档保存，后续修改模板不影响历史文档。</p></div></form>`,`${action('close','取消','button')}${submit('ai-template-form','保存模板')}`);
+  }
+  function clearTemplateSuggestion(form) {
+    if(!form)return;
+    form.querySelector('#ai-template-consent').checked=false;
+    form.querySelector('#ai-template-suggestion').hidden=true;
+    form.elements.suggestionName.value='';form.elements.suggestionContent.value='';
+  }
+  async function analyzeTemplate(trigger) {
+    const form=document.querySelector('#ai-template-form');if(!form)return;
+    try{
+      if(!ready())throw new Error('请先在「模型设置」中配置并启用文档模型。');
+      const title=form.elements.historyTitle.value.trim()||'历史文档',content=form.elements.historyContent.value.trim();
+      if(!content)throw new Error('请先导入历史文档或粘贴历史正文。');
+      if(content.length>20000)throw new Error('历史正文不能超过 20000 字，请整理后重试。');
+      if(!form.querySelector('#ai-template-consent').checked)throw new Error('请先核对历史正文，并勾选同意发送给上述模型服务。');
+      const result=await request(form,'正在识别，请稍候…',()=>post('/api/ai/templates/analyze',{title,content,consent:true}),trigger);
+      if(result){
+        const suggestion=result.value.suggestion;
+        if(!suggestion||typeof suggestion.name!=='string'||!suggestion.name.trim()||suggestion.name.length>100||typeof suggestion.content!=='string'||!suggestion.content.trim()||suggestion.content.length>20000)throw new Error('识别结果不完整，请重试；历史正文和已填写模板已保留。');
+        form.elements.suggestionName.value=suggestion.name;form.elements.suggestionContent.value=suggestion.content;
+        const preview=form.querySelector('#ai-template-suggestion');preview.hidden=false;preview.scrollIntoView({block:'nearest'});
+        toast('识别完成，请检查建议后应用到模板');
+      }
+    }catch(error){showError(error,form);}
+  }
+  function applyTemplateSuggestion() {
+    const form=document.querySelector('#ai-template-form');if(!form)return;
+    if(!form.elements.suggestionContent.value.trim())return;
+    form.elements.name.value=form.elements.suggestionName.value;
+    form.elements.content.value=form.elements.suggestionContent.value;
+    form.elements.name.scrollIntoView({block:'nearest'});form.elements.name.focus({preventScroll:true});
+    toast('已应用到下方模板，可继续编辑，核对后点击「保存模板」');
   }
   function generateForm(taskId='') {
     editor=null;
@@ -132,6 +165,8 @@ export function createAiOffice(ui) {
       }
       if(name==='template-new')templateForm();
       if(name==='template')templateForm(state.templates.find(t=>t.id===id));
+      if(name==='template-analyze')await analyzeTemplate(el);
+      if(name==='template-apply')applyTemplateSuggestion();
       if(name==='generate')generateForm(el?.dataset.taskId||'');
       if(name==='document'){const result=await request(null,'正在读取…',()=>api(`/api/ai/documents/${urlId(id)}`));if(result)documentForm(result.value.document);}
       if(name==='transcribe')await transcribe();
@@ -195,6 +230,17 @@ export function createAiOffice(ui) {
       if(result){form.elements.content.value=result.value.content;if(!form.elements.title.value.trim())form.elements.title.value=result.value.title;toast('正文已在本机提取，请核对后保存素材');}
     }catch(error){showError(error,form);}finally{input.value='';}
   }
+  async function importTemplateHistory(input) {
+    const file=input.files?.[0];if(!file)return;
+    const form=document.querySelector('#ai-template-form');if(!form)return;
+    clearTemplateSuggestion(form);
+    try{
+      if(file.size>1024*1024||!file.size)throw new Error('请选择非空且不超过 1 兆的历史文档。');
+      if(!/\.(txt|md|csv|docx)$/i.test(file.name))throw new Error('支持文本、Markdown、CSV 和 Word（.docx）文件。');
+      const result=await request(form,'正在本机提取正文…',async()=>post('/api/ai/import',{file:{name:file.name,contentBase64:await readBase64(file)}}));
+      if(result){form.elements.historyContent.value=result.value.content;form.elements.historyTitle.value=result.value.title;toast('历史正文已在本机提取，请核对后再识别');}
+    }catch(error){showError(error,form);}finally{input.value='';}
+  }
   async function transcribe() {
     const form=document.querySelector('#ai-material-form'),input=document.querySelector('#ai-audio-file');
     try{
@@ -230,5 +276,8 @@ export function createAiOffice(ui) {
       toast('成稿已导出');
     }finally{el.disabled=false;}
   }
-  return {load,render,onAction,onSubmit,get busy(){return busy;},input:()=>updateEditorControls(),change:async target=>{if(target.id==='ai-material-file')await importMaterial(target);}};
+  return {load,render,onAction,onSubmit,get busy(){return busy;},input:target=>{
+    updateEditorControls();
+    if(target?.id==='ai-historyTitle'||target?.id==='ai-historyContent')clearTemplateSuggestion(target.closest('#ai-template-form'));
+  },change:async target=>{if(target.id==='ai-material-file')await importMaterial(target);if(target.id==='ai-template-file')await importTemplateHistory(target);}};
 }
