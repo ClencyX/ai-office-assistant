@@ -117,6 +117,9 @@ export function createApplication(options = {}) {
         if (aiDocumentMatch && !aiDocumentMatch[2] && method === 'PATCH') return json(response, 200, { document: ai.updateDocument(decodeURIComponent(aiDocumentMatch[1]), body) });
         if (aiDocumentMatch?.[2] && method === 'POST') return json(response, 200, { document: ai.reviewDocument(decodeURIComponent(aiDocumentMatch[1]), body) });
         if (method === 'POST' && completeMatch) return json(response, 200, { task: store.completeTask(decodeURIComponent(completeMatch[1]), body) });
+        const attachmentMutationMatch = pathname.match(/^\/api\/attachments\/([^/]+)(\/restore)?$/);
+        if (method === 'DELETE' && attachmentMutationMatch && !attachmentMutationMatch[2]) return json(response, 200, store.deleteAttachment(decodeURIComponent(attachmentMutationMatch[1])));
+        if (method === 'POST' && attachmentMutationMatch?.[2]) return json(response, 200, store.restoreAttachment(decodeURIComponent(attachmentMutationMatch[1])));
         if (method === 'PATCH' && pathname === '/api/serverchan/settings') return json(response, 200, { serverchan: serverchan.updateSettings(body) });
         if (method === 'POST' && pathname === '/api/serverchan/test') return json(response, 200, { result: await serverchan.sendTest(), serverchan: serverchan.snapshot() });
         if (method === 'POST' && pathname === '/api/serverchan/send') {

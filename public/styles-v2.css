@@ -253,11 +253,21 @@ tbody tr:hover { background: #fcfdff; }
 .board-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 8px; margin-top: 12px; }
 .attachment-list { list-style: none; margin: 0; padding: 0; }
 .attachment-list li { padding: 12px 0; border-bottom: 1px solid var(--line); }
-.attachment-download { display: inline-flex; gap: 8px; align-items: center; max-width: 100%; font-size: 13px; color: var(--blue); }
+.attachment-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.attachment-heading > .link-button, .attachment-heading > .button { flex-shrink: 0; }
+.attachment-heading > .link-button.danger { color: #b16a62; }
+.attachment-heading > .attachment-info { min-width: 0; }
+.attachment-download { display: inline-flex; gap: 8px; align-items: center; min-width: 0; max-width: 100%; font-size: 13px; color: var(--blue); }
 .attachment-download span { overflow-wrap: anywhere; }
-.attachment-download svg { width: 15px; height: 15px; }
+.attachment-download svg { width: 15px; height: 15px; flex-shrink: 0; }
 .attachment-info p { color: #8f9eb2; font-size: 11px; margin-top: 7px; line-height: 1.8; }
 .attachment-empty { font-size: 12px; color: #929fb0; line-height: 1.8; }
+.deleted-attachments { margin-top: 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 5px; background: #fafbfc; }
+.deleted-attachments summary { cursor: pointer; color: #71839a; font-size: 12px; line-height: 1.8; }
+.deleted-attachments[open] summary { margin-bottom: 12px; }
+.deleted-attachments .form-error { margin-top: 12px; }
+.deleted-attachments .attachment-list li:last-child { border-bottom: 0; padding-bottom: 0; }
+.deleted-attachment-name { color: #71839a; font-size: 13px; font-weight: 400; overflow-wrap: anywhere; }
 .completion-title { font-size: 17px; font-weight: 500; color: #465d7b; line-height: 1.8; margin-bottom: 20px; overflow-wrap: anywhere; }
 .completion-requirement { padding: 15px; border: 1px solid #e1e7ef; background: #f7f9fc; border-radius: 5px; color: #7488a3; font-size: 13px; line-height: 1.9; }
 .completion-requirement strong { font-weight: 500; }
