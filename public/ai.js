@@ -1,3 +1,5 @@
+import {createModelSettings} from './ai-settings.js';
+
 // AI 文档工作区。模型调用必须来自明确的用户操作。
 export function createAiOffice(ui) {
   const {api,esc,icon,action,option,heading,empty,timeText,openDrawer,closeDrawer,toast,getTasks,rerender}=ui;
@@ -17,6 +19,9 @@ export function createAiOffice(ui) {
   const submit=(id,label,extra='')=>`<button type="submit" form="${id}" class="button primary" ${extra}>${label}</button>`;
   const post=(path,body,method='POST')=>api(path,{method,body:JSON.stringify(body)});
   const ready=()=>state.settings.enabled&&state.settings.model&&!state.settings.configError;
+  const modelSettings=createModelSettings({esc,openDrawer,action,request,rerender,getSettings:()=>state.settings,saveSettings:async payload=>{
+    const result=await post('/api/ai/settings',payload,'PATCH');state.settings=result.settings;return result;
+  },testConnection:()=>post('/api/ai/test',{consent:true})});
 
   async function load(render=true) {
     if(loading)return loading;
@@ -70,8 +75,7 @@ export function createAiOffice(ui) {
     return `<div class="panel-heading"><h2>起草结构与写作要求</h2>${button('template-new',`${icon('plus')} 新建文档模板`,'button small')}</div><div class="ai-list">${state.templates.map(t=>`<article class="ai-list-item"><div class="ai-list-copy"><h3>${esc(t.name)}</h3><p>${esc(t.kind)}</p><p class="ai-template-preview">${esc(t.content)}</p></div>${button('template','编辑模板','button small',`data-id="${esc(t.id)}"`)}</article>`).join('')}</div>`;
   }
   function settingsForm() {
-    const s=state.settings;
-    openDrawer('配置 AI 模型',`<form id="ai-settings-form">${errorBox}<div class="ai-form-stack"><label class="ai-check"><input name="enabled" type="checkbox" ${s.enabled?'checked':''}><span>启用 AI 文档辅助</span></label>${textField('模型服务地址','baseUrl',s.baseUrl||'http://localhost:11434/v1','type="url" required maxlength="2000" spellcheck="false"')}<p class="hint">填写兼容接口的基础地址。远程服务须使用 HTTPS；本机服务支持 HTTP。</p>${textField('文档模型名称','model',s.model,'maxlength="200" spellcheck="false" placeholder="填写模型服务提供的名称"')}${textField('录音转写模型名称（选填）','transcriptionModel',s.transcriptionModel,'maxlength="200" spellcheck="false" placeholder="需要使用录音时填写"')}${textField('接口密钥（选填）','apiKey','','type="password" autocomplete="new-password" maxlength="2000" spellcheck="false" placeholder="留空保留原密钥"')}<p class="hint">${s.keyConfigured?'本机已保存密钥，页面不会回显。':'本机尚未保存密钥。本地免密模型可留空。'}</p>${s.keyConfigured?'<label class="ai-check"><input name="clearApiKey" type="checkbox"><span>清除已保存的密钥</span></label>':''}<div class="ai-note">保存设置不会发送资料。连接测试仅发送固定虚构文字；生成和录音转写均需单独确认。</div></div></form>`,`${action('close','取消','button')}${submit('ai-settings-form','保存设置')}`);
+    modelSettings.open();
   }
   function testForm() {
     openDrawer('测试模型连接',`<form id="ai-test-form">${errorBox}<div class="ai-form-stack"><p class="ai-note">将向 <strong>${esc(endpoint())}</strong> 的 <strong>${esc(state.settings.model||'未配置')}</strong> 模型发送一段固定虚构文字，请确认后测试。</p><p class="subtitle">测试不读取任务、素材或文档。第三方服务可能按请求计费。</p><label class="ai-check"><input name="consent" type="checkbox" required><span>我同意向上述模型服务发送固定虚构测试文字</span></label></div></form>`,`${action('close','取消','button')}${submit('ai-test-form','确认测试连接')}`);
@@ -139,12 +143,7 @@ export function createAiOffice(ui) {
     const fields=Object.fromEntries(new FormData(form));
     try{
       if(form.id==='ai-settings-form'){
-        const payload={enabled:form.elements.enabled.checked,baseUrl:fields.baseUrl,model:fields.model,transcriptionModel:fields.transcriptionModel};
-        if(fields.apiKey?.trim())payload.apiKey=fields.apiKey.trim();
-        if(form.elements.clearApiKey?.checked)payload.clearApiKey=true;
-        if(payload.clearApiKey&&payload.apiKey)throw new Error('请只选择更换密钥或清除密钥其中一项。');
-        const result=await request(form,'正在保存…',()=>post('/api/ai/settings',payload,'PATCH'));
-        if(result){state.settings=result.value.settings;form.elements.apiKey.value='';rerender();openDrawer('模型设置已保存',`<div class="ai-form-stack"><p class="ai-note">服务地址：${esc(endpoint())}<br>文档模型：${esc(state.settings.model||'尚未配置')}<br>状态：${state.settings.enabled?'已启用':'未启用'}</p><p class="subtitle">可发送固定虚构文字测试连接，测试不会读取本机资料。</p></div>`,`${cancel()}${button('test','测试连接','button primary',!state.settings.model||state.settings.configError?'disabled':'')}`);toast('模型设置已保存在本机');}
+        await modelSettings.submit(form);
       }
       if(form.id==='ai-test-form'){
         if(!form.elements.consent.checked)throw new Error('请先勾选同意发送固定虚构测试文字。');

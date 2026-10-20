@@ -61,6 +61,34 @@ test('配置禁止不安全远程地址与秘密嵌入 URL，损坏配置安全�
   assert.equal(recovered.updateSettings({ model: 'recovered' }).configError, null);
 });
 
+test('更换服务必须显式提供新密钥或清除旧密钥，避免把已保存密钥发送给其他服务', async t => {
+  const { client, requests, dir } = await fixture(t);
+  client.updateSettings({ baseUrl: 'https://first.example/v1', model: 'first-chat', apiKey });
+  const original = await readFile(join(dir, 'ai-settings.json'), 'utf8');
+  for (const apiKeyValue of [undefined, '', '  ']) {
+    assert.throws(() => client.updateSettings({ baseUrl: 'https://second.example/v1', model: 'second-chat', ...(apiKeyValue === undefined ? {} : { apiKey: apiKeyValue }) }), error => error.status === 409 && /更换模型服务/.test(error.message));
+    assert.equal(await readFile(join(dir, 'ai-settings.json'), 'utf8'), original);
+  }
+  assert.equal(requests.length, 0);
+  assert.equal(client.updateSettings({ baseUrl: 'https://first.example/compatible/v1' }).keyConfigured, true);
+  assert.equal(client.updateSettings({ baseUrl: 'https://second.example/v1', apiKey: 'second-synthetic-key' }).keyConfigured, true);
+  await client.testConnection({ consent: true });
+  assert.equal(requests[0].headers.Authorization, 'Bearer second-synthetic-key');
+  assert.equal(client.updateSettings({ baseUrl: 'http://localhost:11434/v1', clearApiKey: true }).keyConfigured, false);
+  await client.testConnection({ consent: true });
+  assert.equal(Object.hasOwn(requests[1].headers, 'Authorization'), false);
+  for (const baseUrl of ['https://service.example/v1/chat/completions', 'https://service.example/v1/audio/transcriptions/']) assert.throws(() => client.updateSettings({ baseUrl }), /基础地址/);
+});
+
+test('常见连接失败给出对应的中文处理建议，不回显上游正文或密钥', async t => {
+  const cases = [[400, /模型编号/], [401, /密钥认证失败/], [402, /余额/], [403, /调用权限/], [404, /基础地址/], [422, /参数不受支持/], [429, /过于频繁/], [500, /暂时繁忙/], [503, /暂时繁忙/]];
+  for (const [status, message] of cases) {
+    const { client, configure } = await fixture(t, { fetchImpl: async () => new Response(JSON.stringify({ error: { message: apiKey + ' private request details' } }), { status }) });
+    configure();
+    await assert.rejects(client.testConnection({ consent: true }), error => error.status === 502 && error.message.includes(`HTTP ${status}`) && message.test(error.message) && !error.message.includes(apiKey) && !error.message.includes('private request details'));
+  }
+});
+
 test('模板、素材按类型校验，关联任务校验，列表不泄露正文，软删除保留 SQLite 内容', async t => {
   const { store, client, material } = await fixture(t);
   const template = client.saveTemplate({ name: '自定义纪要', kind: '会议纪要', content: '只写已确认事项。' });
