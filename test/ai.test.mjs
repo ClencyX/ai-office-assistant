@@ -89,11 +89,28 @@ test('常见连接失败给出对应的中文处理建议，不回显上游正�
   }
 });
 
-test('模板、素材按类型校验，关联任务校验，列表不泄露正文，软删除保留 SQLite 内容', async t => {
+test('模板不再限定类型，新模板只需名称正文，旧模板兼容且不改变原分类', async t => {
+  const { store, client, service } = await fixture(t);
+  const template = client.saveTemplate({ name: '培训总结', content: '整理培训目标、学习收获及后续计划。' });
+  assert.equal(template.name, '培训总结');
+  assert.equal(Object.hasOwn(template, 'kind'), false);
+  assert.equal(store.db.prepare('SELECT kind FROM ai_templates WHERE id=?').get(template.id).kind, '');
+  assert.equal(client.saveTemplate({ content: '列出培训成效和待改进事项。' }, template.id).name, template.name);
+  assert.equal(client.saveTemplate({ name: '调研报告', kind: '自定义旧分类', content: '按调研目的、发现和建议起草。' }).name, '调研报告');
+  store.db.prepare('UPDATE ai_templates SET kind=? WHERE id=?').run('会议纪要', 'builtin-minutes');
+  const edited = client.saveTemplate({ name: '项目简报', content: '简要整理项目进展。', kind: '不再使用的分类' }, 'builtin-minutes');
+  assert.equal(edited.name, '项目简报');
+  assert.equal(store.db.prepare('SELECT kind FROM ai_templates WHERE id=?').get(edited.id).kind, '会议纪要');
+  assert.equal(Object.hasOwn(client.getTemplate(edited.id), 'kind'), false);
+  assert.ok(client.state().templates.every(value => !Object.hasOwn(value, 'kind')));
+  assert.equal(service().getTemplate(edited.id).name, '项目简报');
+  assert.throws(() => client.saveTemplate({ name: '', content: '正文' }), /模板名称/);
+  assert.throws(() => client.saveTemplate({ name: '无正文' }), /模板内容/);
+});
+
+test('素材按类型校验，关联任务校验，列表不泄露正文，软删除保留 SQLite 内容', async t => {
   const { store, client, material } = await fixture(t);
-  const template = client.saveTemplate({ name: '自定义纪要', kind: '会议纪要', content: '只写已确认事项。' });
-  assert.equal(client.saveTemplate({ content: '列出待核对事项。' }, template.id).name, template.name);
-  assert.throws(() => client.saveTemplate({ name: '错误', kind: '随便', content: '内容' }), /模板类型/);
+  assert.throws(() => material({ kind: '无效类型' }), /材料类型/);
   assert.throws(() => material({ content: '字'.repeat(20001) }), /20000/);
   assert.throws(() => material({ taskId: 'missing' }), /关联任务/);
   const task = store.createTask(taskInput); const saved = material({ taskId: task.id });
@@ -132,6 +149,8 @@ test('生成仅发送显式资料，隔离历史样例事实，保存稳定来�
   assert.equal(doc.sources.length, 2); assert.equal(doc.sources[1].kind, '历史样例');
   const request = JSON.parse(requests[0].body); assert.match(request.messages[0].content, /历史样例仅用于.*绝不作为本次事实/);
   assert.match(request.messages[1].content, /仅供格式参考的历史样例/);
+  assert.equal(Object.hasOwn(JSON.parse(request.messages[1].content).模板, 'kind'), false);
+  assert.equal(Object.hasOwn(doc.templateSnapshot, 'kind'), false);
   assert.doesNotMatch(requests[0].body, /不应自动外发|不应外发的未选材料/);
   client.saveMaterial({ content: '后来修改的内容' }, selected.id); client.deleteMaterial(reference.id);
   client.saveTemplate({ content: '后来修改的模板' }, 'builtin-minutes');
@@ -143,6 +162,22 @@ test('生成仅发送显式资料，隔离历史样例事实，保存稳定来�
   const backup = new DatabaseSync(backupPath);
   try { assert.equal(backup.prepare('SELECT originalContent FROM ai_documents WHERE id=?').get(doc.id).originalContent, doc.originalContent); }
   finally { backup.close(); }
+});
+
+test('取消模板分类后，历史文档快照原样保留，新自定义模板可生成文档', async t => {
+  const { client, store, configure, generate, service, requests } = await fixture(t); configure();
+  const historical = await generate();
+  const legacySnapshot = { ...historical.templateSnapshot, kind: '会议纪要' };
+  store.db.prepare('UPDATE ai_documents SET templateSnapshot=? WHERE id=?').run(JSON.stringify(legacySnapshot), historical.id);
+  client.saveTemplate({ name: '新会议模板', content: '新的起草说明。' }, 'builtin-minutes');
+  const restarted = service();
+  assert.deepEqual(restarted.getDocument(historical.id).templateSnapshot, legacySnapshot);
+  const template = restarted.saveTemplate({ name: '培训总结', content: '按培训情况、学习成效与改进计划起草。' });
+  const current = await generate({ templateId: template.id });
+  assert.equal(current.templateName, template.name);
+  assert.deepEqual(current.templateSnapshot, template);
+  assert.equal(Object.hasOwn(JSON.parse(JSON.parse(requests.at(-1).body).messages[1].content).模板, 'kind'), false);
+  assert.deepEqual(restarted.getDocument(historical.id).templateSnapshot, legacySnapshot);
 });
 
 test('生成前校验资料数量、类型、存在、同意和总上下文，失败不调用上游或保存伪初稿', async t => {

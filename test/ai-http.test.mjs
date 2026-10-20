@@ -33,6 +33,24 @@ test('AI 接口沿用同源写入保护，未配置不请求上游，素材导�
   assert.equal(calls.length, 0);
 });
 
+test('文档模板接口不要求文档类型，新增和编辑自定义名称后列表不返回分类', async t => {
+  const { base, send, calls } = await fixture(t);
+  const created = await send('/api/ai/templates', { name: '培训总结', content: '按培训内容、成果、改进计划整理。' });
+  assert.equal(created.status, 201);
+  const { template } = await created.json();
+  assert.equal(template.name, '培训总结'); assert.equal(Object.hasOwn(template, 'kind'), false);
+  const updated = await send(`/api/ai/templates/${template.id}`, { name: '年度培训总结', content: '汇总全年培训成果与后续计划。' }, 'PATCH');
+  assert.equal(updated.status, 200);
+  assert.equal((await updated.json()).template.name, '年度培训总结');
+  const compatible = await send('/api/ai/templates/builtin-minutes', { name: '工作简报', content: '整理本周工作。', kind: '自定义旧分类' }, 'PATCH');
+  assert.equal(compatible.status, 200);
+  assert.equal(Object.hasOwn((await compatible.json()).template, 'kind'), false);
+  const state = await (await fetch(base + '/api/ai')).json();
+  assert.equal(state.templates.find(value => value.id === template.id).name, '年度培训总结');
+  assert.ok(state.templates.every(value => !Object.hasOwn(value, 'kind')));
+  assert.equal(calls.length, 0);
+});
+
 test('真实接口形态的隔离调用完成初稿、版本审核、Word 导出并提交任务，密钥不回显', async t => {
   const { app, base, send, calls, configure } = await fixture(t);
   assert.equal((await configure()).status, 200);
