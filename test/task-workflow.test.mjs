@@ -195,3 +195,143 @@ test('正式交付、完成状态与来源关联同事务，写入关联失败�
   assert.equal(workflow.workspace(task.id).submissions.length, 0);
   assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM events WHERE taskId=? AND action='完成任务'").get(task.id).n, 0);
 });
+
+test('任务起草可直接使用本次模板，优先于模板编号且不保存到模板库，只发送所选本任务素材', async t => {
+  const { store, ai, workflow, task, calls, configure } = await fixture(t); configure();
+  const material = workflow.addSource(task.id, { file: encoded('本次会议记录.txt', '甲负责核对本次台账。') }).material;
+  ai.saveMaterial({ title: '未选材料', kind: '素材', taskId: task.id, content: '不应发送的未选资料。' });
+  const other = store.createTask({ title: '另一场会议', owner: '乙', startDate: '2026-10-20', dueDate: '2026-10-23', deliverable: '整理另一场会议' });
+  ai.saveMaterial({ title: '其他任务记录', kind: '素材', taskId: other.id, content: '不应发送的其他任务资料。' });
+  const templatesBefore = ai.state().templates;
+  const template = { name: ' 历史例会文档 ', content: ' 一、会议概况\n二、议定事项\n历史人员王某及日期仅供格式参考。 ' };
+  const { document } = await workflow.draft(task.id, { title: '新纪要', templateId: '不应读取这个模板编号', template, materialIds: [material.id], consent: true, taskId: other.id, taskRequirements: { owner: '不可覆盖' } });
+  assert.deepEqual(ai.state().templates, templatesBefore);
+  assert.deepEqual(document.templateSnapshot, { name: template.name.trim(), content: template.content.trim() });
+  assert.equal(document.templateName, '历史例会文档'); assert.equal(document.taskId, task.id);
+  assert.equal(document.taskRequirements.owner, task.owner); assert.equal(document.sources.length, 1);
+  const sent = JSON.parse(calls[0].init.body); const context = JSON.parse(sent.messages[1].content);
+  assert.deepEqual(context.模板, document.templateSnapshot);
+  assert.deepEqual(context.本次事实素材.map(item => item.id), [material.id]);
+  assert.doesNotMatch(sent.messages[1].content, /不应发送|不可覆盖/);
+  assert.match(sent.messages[0].content, /模板仅用于结构与写作格式参考/);
+  assert.match(sent.messages[0].content, /历史人员、日期、数据和结论不得作为本次事实沿用/);
+});
+
+test('内嵌模板校验名称正文长度、同意和所属任务，失败不调用模型不保存文档；旧起草仍使用模板库', async t => {
+  const { store, ai, workflow, task, calls, configure } = await fixture(t); configure();
+  const material = ai.saveMaterial({ title: '会议记录', kind: '素材', taskId: task.id, content: '甲负责核对。' });
+  const body = { title: '纪要', materialIds: [material.id], consent: true };
+  for (const template of [null, {}, { name: '', content: '结构' }, { name: 'a'.repeat(101), content: '结构' }, { name: '格式', content: '' }, { name: '格式', content: 'a'.repeat(20001) }]) {
+    await assert.rejects(workflow.draft(task.id, { ...body, template }), /JSON|模板名称|模板内容/);
+  }
+  const template = { name: '本次格式', content: '一、会议概况\n二、落实分工' };
+  await assert.rejects(workflow.draft(task.id, { ...body, template, consent: false }), /确认同意/);
+  const other = store.createTask({ title: '另一场会议', owner: '乙', startDate: '2026-10-20', dueDate: '2026-10-23', deliverable: '整理纪要' });
+  await assert.rejects(workflow.draft(other.id, { ...body, template }), /属于当前任务/);
+  await assert.rejects(ai.generate({ ...body, taskId: task.id, inlineTemplate: template }), /模板编号/);
+  assert.equal(calls.length, 0); assert.equal(ai.state().documents.length, 0); assert.equal(store.getTask(task.id).status, '待办');
+  const legacy = await ai.generate({ ...body, taskId: task.id, templateId: 'builtin-minutes', inlineTemplate: template });
+  assert.equal(legacy.templateSnapshot.id, 'builtin-minutes'); assert.equal(legacy.taskRequirements, null);
+  assert.equal(ai.state().templates.length, 3);
+});
+
+test('一次完成可保存未保存的编辑、人工确认并生成真实 Word，确认日志不虚构质量评价', async t => {
+  const { store, ai, workflow, task, generate, calls } = await fixture(t); const original = await generate();
+  const title = '核对后的例会纪要'; const content = original.content + '\n人工确认：甲于三日内完成台账核对。';
+  const result = workflow.finish(task.id, { documentId: original.id, revision: 1, title, content, confirmed: true, note: '已核对责任人与完成日期。' });
+  assert.equal(result.task.status, '已完成'); assert.equal(result.task.attachments.length, 1);
+  assert.equal(result.document.title, title); assert.equal(result.document.content, content);
+  assert.equal(result.document.revision, 2); assert.equal(result.document.originalContent, original.content);
+  assert.equal(result.document.status, '已确认'); assert.equal(result.document.quality, null);
+  assert.equal(result.document.reviews.length, 1); assert.equal(result.document.reviews[0].revision, 2);
+  assert.equal(result.document.reviews[0].quality, '未评价'); assert.equal(result.document.reviews[0].reviewNote, '已核对责任人与完成日期。');
+  assert.equal(result.document.reviews[0].reviewer, store.settings().adminName);
+  assert.deepEqual(ai.state().metrics, { reviewedCount: 0, usableCount: 0, usableRate: null });
+  assert.equal(store.db.prepare('SELECT confirmedRevision FROM ai_documents WHERE id=?').get(original.id).confirmedRevision, 2);
+  assert.equal(result.submission.revision, 2); assert.equal(result.submission.title, title);
+  const saved = store.db.prepare('SELECT * FROM task_submissions WHERE id=?').get(result.submission.id);
+  assert.equal(saved.content, content); assert.deepEqual(JSON.parse(saved.sources), original.sources);
+  assert.deepEqual(JSON.parse(saved.templateSnapshot), original.templateSnapshot);
+  assert.deepEqual(JSON.parse(saved.taskRequirements), original.taskRequirements);
+  const attachment = store.getAttachment(result.submission.attachmentId);
+  assert.equal(attachment.note, '已核对责任人与完成日期。'); assert.match(attachment.name, /\.docx$/);
+  const word = extractTextFile({ name: attachment.name, contentBase64: Buffer.from(attachment.content).toString('base64') });
+  assert.match(word.content, /核对后的例会纪要/); assert.match(word.content, /三日内完成台账核对/);
+  assert.equal(calls.length, 1);
+  assert.throws(() => workflow.finish(task.id, { documentId: original.id, revision: 2, confirmed: true }), /已完成/);
+  assert.equal(workflow.workspace(task.id).submissions.length, 1); assert.equal(ai.getDocument(original.id).reviews.length, 1);
+});
+
+test('一次完成对未改动或已保存内容不增加无意义版本，默认说明记录人工核对', async t => {
+  for (const savedFirst of [false, true]) {
+    const { ai, workflow, task, generate } = await fixture(t); let document = await generate();
+    if (savedFirst) document = ai.updateDocument(document.id, { revision: document.revision, content: document.content + '\n已保存的人工修改。' });
+    const result = workflow.finish(task.id, { documentId: document.id, revision: document.revision, title: document.title, content: document.content, confirmed: true });
+    assert.equal(result.document.revision, document.revision); assert.equal(result.submission.revision, document.revision);
+    assert.equal(result.document.reviews[0].quality, '未评价'); assert.match(result.document.reviews[0].reviewNote, /提交人确认已核对.*任务交付要求/);
+    assert.equal(result.document.quality, null); assert.equal(result.task.status, '已完成');
+  }
+});
+
+test('一次完成拒绝缺少人工确认、无效正文、过期版本与跨任务；任何失败不改变文档和任务', async t => {
+  const { store, ai, workflow, task, generate } = await fixture(t); let document = await generate();
+  document = ai.updateDocument(document.id, { revision: 1, content: document.content + '\n保存为新版本。' });
+  const other = store.createTask({ title: '另一任务', owner: '乙', startDate: '2026-10-20', dueDate: '2026-10-23', deliverable: '另交文档' });
+  const before = { document: ai.getDocument(document.id), task: store.getTask(task.id), other: store.getTask(other.id) };
+  const body = { documentId: document.id, revision: 2, confirmed: true, title: '待提交标题', content: '待提交正文' };
+  for (const [id, input, expected] of [
+    [task.id, { ...body, confirmed: false }, /确认/],
+    [task.id, { ...body, confirmed: 'true' }, /确认/],
+    [task.id, { ...body, revision: 0 }, /版本号/],
+    [task.id, { ...body, revision: 1 }, /版本已变化/],
+    [task.id, { ...body, title: '' }, /文档标题/],
+    [task.id, { ...body, content: '' }, /文档正文/],
+    [task.id, { ...body, content: 'a'.repeat(60001) }, /文档正文/],
+    [task.id, { ...body, note: {} }, /提交说明/],
+    [task.id, { ...body, note: 'a'.repeat(2001) }, /提交说明/],
+    [task.id, { ...body, documentId: '不存在' }, /当前任务/],
+    [other.id, body, /当前任务/]
+  ]) {
+    assert.throws(() => workflow.finish(id, input), expected);
+    assert.deepEqual(ai.getDocument(document.id), before.document);
+    assert.deepEqual(store.getTask(task.id), before.task); assert.deepEqual(store.getTask(other.id), before.other);
+    assert.equal(workflow.workspace(task.id).submissions.length, 0);
+  }
+  store.deleteTask(task.id);
+  assert.throws(() => workflow.finish(task.id, body), /未找到|不存在/);
+  assert.deepEqual(ai.getDocument(document.id), before.document);
+});
+
+test('一次完成的编辑、人工确认、附件、任务及提交快照原子回滚，格式不符或落库失败均无副作用', async t => {
+  const { store, ai, workflow, task, generate } = await fixture(t); const document = await generate();
+  const body = { documentId: document.id, revision: 1, title: '不应部分保存的标题', content: '不应部分保存的修改内容。', confirmed: true };
+  const snapshot = () => ({
+    document: ai.getDocument(document.id), task: store.getTask(task.id),
+    submissions: store.db.prepare('SELECT * FROM task_submissions WHERE taskId=?').all(task.id),
+    events: store.db.prepare('SELECT * FROM events WHERE taskId=?').all(task.id),
+    reminders: store.db.prepare('SELECT * FROM reminders WHERE taskId=?').all(task.id)
+  });
+  store.updateTask(task.id, { submissionType: '表格' }); const beforeFormat = snapshot();
+  assert.throws(() => workflow.finish(task.id, body), /不符合提交形式/);
+  assert.deepEqual(snapshot(), beforeFormat);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM attachments WHERE taskId=?').get(task.id).n, 0);
+  store.updateTask(task.id, { submissionType: '文本' }); const beforeStorage = snapshot();
+  store.db.exec("CREATE TRIGGER reject_finish_submission BEFORE INSERT ON task_submissions BEGIN SELECT RAISE(ABORT,'synthetic finish failure'); END;");
+  assert.throws(() => workflow.finish(task.id, body), /synthetic finish failure/);
+  assert.deepEqual(snapshot(), beforeStorage);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM attachments WHERE taskId=?').get(task.id).n, 0);
+  assert.deepEqual(ai.state().metrics, { reviewedCount: 0, usableCount: 0, usableRate: null });
+  store.db.exec('DROP TRIGGER reject_finish_submission');
+  const result = workflow.finish(task.id, body);
+  assert.equal(result.document.revision, 2); assert.equal(result.document.reviews.length, 1); assert.equal(result.task.status, '已完成');
+});
+
+test('简化提交保留历史真实初稿评价和审核记录，本次人工确认不增加质量评价指标', async t => {
+  const { ai, workflow, task, generate } = await fixture(t); const document = await generate();
+  ai.reviewDocument(document.id, { revision: 1, confirmed: true, quality: '需修改', reviewNote: '原初稿需要修正责任人。' });
+  const beforeMetrics = ai.state().metrics;
+  const result = workflow.finish(task.id, { documentId: document.id, revision: 1, content: document.content + '\n人工修正责任人。', confirmed: true });
+  assert.equal(result.document.revision, 2); assert.equal(result.document.quality, '需修改');
+  assert.deepEqual(result.document.reviews.map(review => [review.revision, review.quality]), [[1, '需修改'], [2, '未评价']]);
+  assert.deepEqual(ai.state().metrics, beforeMetrics); assert.equal(result.task.status, '已完成');
+});

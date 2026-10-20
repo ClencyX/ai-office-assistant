@@ -113,12 +113,14 @@ export function createApplication(options = {}) {
         const sourceMutationMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/sources\/([^/]+)(\/extract)?$/);
         const taskDraftMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/draft$/);
         const taskSubmitMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/submit$/);
+        const taskFinishMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/finish$/);
         checkWrite(request, automationKey, isAutomation); const body = await readJson(request, method === 'POST' && completeMatch ? 36 * 1024 * 1024 : method === 'POST' && (pathname === '/api/ai/transcribe' || sourceUploadMatch) ? 29 * 1024 * 1024 : 2 * 1024 * 1024);
         if (method === 'POST' && sourceUploadMatch) return json(response, 201, workflow.addSource(decodeURIComponent(sourceUploadMatch[1]), body));
         if (method === 'POST' && sourceMutationMatch?.[3]) return json(response, 200, await workflow.extractSource(decodeURIComponent(sourceMutationMatch[1]), decodeURIComponent(sourceMutationMatch[2]), body));
         if (method === 'DELETE' && sourceMutationMatch && !sourceMutationMatch[3]) return json(response, 200, workflow.deleteSource(decodeURIComponent(sourceMutationMatch[1]), decodeURIComponent(sourceMutationMatch[2])));
         if (method === 'POST' && taskDraftMatch) return json(response, 201, await workflow.draft(decodeURIComponent(taskDraftMatch[1]), body));
         if (method === 'POST' && taskSubmitMatch) return json(response, 200, workflow.submit(decodeURIComponent(taskSubmitMatch[1]), body));
+        if (method === 'POST' && taskFinishMatch) return json(response, 200, workflow.finish(decodeURIComponent(taskFinishMatch[1]), body));
         if (method === 'PATCH' && pathname === '/api/ai/settings') return json(response, 200, { settings: ai.updateSettings(body) });
         if (method === 'POST' && pathname === '/api/ai/test') return json(response, 200, await ai.testConnection(body));
         if (method === 'POST' && pathname === '/api/ai/import') return json(response, 200, extractTextFile(body.file));

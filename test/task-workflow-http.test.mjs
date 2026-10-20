@@ -111,3 +111,51 @@ test('较大的录音原件可本机保存，明确同意转写后才调用上�
   assert.equal(calls.length, 1); assert.match(String(calls[0].url), /audio\/transcriptions$/);
   assert.equal((await get(path + '/workspace')).task.attachments.length, 0);
 });
+
+test('完成页本次上传模板并直接提交编辑内容，不要求另行评价或保存审核步骤', async t => {
+  const { base, send, get, path, configure, calls } = await fixture(t);
+  await configure();
+  const { material } = await (await send(path + '/sources', { file: file('会议记录.txt', '甲负责在10月23日前补齐台账来源。') })).json();
+  const imported = await send('/api/ai/import', { file: file('历史纪要模板.docx', createDocx('历史纪要模板', '一、会议情况\n二、议定事项\n三、责任分工与期限\n历史日期和人员仅作格式示例。')) });
+  assert.equal(imported.status, 200); const extracted = await imported.json();
+  const before = await get(path + '/workspace');
+  const generated = await send(path + '/draft', { title: '项目纪要', template: { name: extracted.title, content: extracted.content }, materialIds: [material.id], referenceIds: [], consent: true });
+  assert.equal(generated.ok, true, await generated.clone().text());
+  const document = (await generated.json()).document;
+  assert.equal(document.templateSnapshot.name, extracted.title);
+  assert.equal((await get(path + '/workspace')).templates.length, before.templates.length);
+  assert.equal((await send(path + '/finish', { documentId: document.id, revision: document.revision, title: '人工核对后的会议纪要', content: draft + '\n人工修改：参会名单已核实。', confirmed: false })).status, 400);
+  const finalContent = draft + '\n人工修改：参会名单已核实。';
+  const submitted = await send(path + '/finish', { documentId: document.id, revision: document.revision, title: '人工核对后的会议纪要', content: finalContent, confirmed: true });
+  assert.equal(submitted.status, 200, await submitted.clone().text());
+  const result = await submitted.json();
+  assert.equal(result.task.status, '已完成'); assert.equal(result.task.attachments.length, 1);
+  const saved = (await get(`/api/ai/documents/${document.id}`)).document;
+  assert.equal(saved.revision, document.revision + 1); assert.equal(saved.content, finalContent);
+  assert.equal(saved.originalContent, draft); assert.equal(saved.status, '已确认'); assert.equal(saved.quality, null);
+  assert.equal(saved.reviews.at(-1).quality, '未评价');
+  assert.equal((await get('/api/ai')).metrics.reviewedCount, 0);
+  const attachment = result.task.attachments[0];
+  const output = Buffer.from(await (await fetch(base + `/api/attachments/${attachment.id}`)).arrayBuffer());
+  assert.match(extractTextFile(file(attachment.name, output)).content, /参会名单已核实/);
+  assert.equal((await send(path + '/finish', { documentId: document.id, revision: saved.revision, title: saved.title, content: saved.content, confirmed: true })).status, 409);
+  assert.equal(calls.length, 1);
+});
+
+test('完成页提交失败保留草稿和任务，拒绝跨源与旧版本，不留下半成的审核记录', async t => {
+  const { send, get, path, configure } = await fixture(t); await configure();
+  const { material } = await (await send(path + '/sources', { file: file('记录.txt', '甲整理台账。') })).json();
+  const generated = await send(path + '/draft', { title: '待核对纪要', templateId: 'builtin-minutes', materialIds: [material.id], referenceIds: [], consent: true });
+  const document = (await generated.json()).document;
+  const body = { documentId: document.id, revision: document.revision, title: '拟提交标题', content: draft + '\n拟提交的编辑。', confirmed: true };
+  assert.equal((await send(path + '/finish', body, 'POST', { Origin: 'https://other.invalid' })).status, 403);
+  assert.equal((await send(path + '/finish', body, 'POST', { 'Content-Type': 'text/plain' })).status, 415);
+  assert.equal((await send(path + '/finish', { ...body, revision: 999 })).status, 409);
+  assert.equal((await send(path, { submissionType: 'PDF' }, 'PATCH')).status, 200);
+  assert.equal((await send(path + '/finish', body)).ok, false);
+  const untouched = (await get(`/api/ai/documents/${document.id}`)).document;
+  assert.deepEqual(untouched, document);
+  const workspace = await get(path + '/workspace');
+  assert.notEqual(workspace.task.status, '已完成'); assert.equal(workspace.task.attachments.length, 0);
+  assert.equal(workspace.submissions.length, 0);
+});

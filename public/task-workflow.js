@@ -1,130 +1,195 @@
-// 单个任务的资料、起草、核对与交付工作区。
+// 在同一页整理资料、生成正文并提交完成任务。
 export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,toast,rerender,onTaskChange,openTaskForm,openRecords,openCompletion,navigate}) {
-  const steps=['任务要求','会议资料','模板与 AI 起草','核对修改','正式提交'];
-  const url=v=>encodeURIComponent(v);
+  const url=encodeURIComponent;
   const button=(name,label,cls='button',extra='')=>action(`tw-${name}`,label,cls,extra);
-  const text=(label,name,value='',extra='')=>`<div class="field"><label for="tw-${name}">${label}</label><input id="tw-${name}" name="${name}" value="${esc(value)}" ${extra}></div>`;
+  const field=(label,name,value='',extra='')=>`<div class="field"><label for="tw-${name}">${label}</label><input id="tw-${name}" name="${name}" value="${esc(value)}" ${extra}></div>`;
   const area=(label,name,value='',extra='')=>`<div class="field"><label for="tw-${name}">${label}</label><textarea id="tw-${name}" name="${name}" ${extra}>${esc(value)}</textarea></div>`;
-  const check=(name,label,checked=false,extra='')=>`<label class="ai-check"><input type="checkbox" name="${name}" ${checked?'checked':''} ${extra}><span>${label}</span></label>`;
   const size=v=>v>=1048576?`${(v/1048576).toFixed(1)} 兆`:`${Math.max(1,Math.ceil(v/1024))} 千字节`;
-  let id='',workspace=null,loading=false,error='',busy=false,step=0,loadToken=0,materialEditor=null,extractId='',deleteSourceId='',deleteMaterialId='';
-  let draft={title:'',templateId:'',materialIds:[],referenceIds:[],consent:false};
-  let selectedDocument='',submitDocument='',submitConfirmed=false,submitNote='',extractConsent=false;
+  let id='',workspace=null,loading=false,error='',busy=false,progress='',loadToken=0,materialEditor=null;
+  let selected=new Set(),selectedDocument='',draftTitle='',templateId='',customTemplate=null,consent=false,confirmed=false;
+  let removeKey='',regeneratePrompt=false,reloadPrompt=false,conflict=false;
   const editors=new Map();
+  const current=()=>editors.get(selectedDocument);
+  const dirty=d=>!!d&&(d.title!==d.savedTitle||d.content!==d.savedContent);
   const ready=()=>workspace?.settings?.enabled&&workspace.settings.model&&!workspace.settings.configError;
-  const endpoint=()=>workspace?.settings?.baseUrl||'尚未配置';
-  const selectedEditor=()=>editors.get(selectedDocument);
-  const dirty=e=>!!e&&(e.title!==e.savedTitle||e.content!==e.savedContent);
-  const draftsDirty=()=>[...editors.values()].some(dirty)||!!materialEditor?.dirty;
   const post=(path,body,method='POST')=>api(path,{method,body:JSON.stringify(body)});
-  function requestRender(){rerender();}
-  async function reload(){
-    const result=await api(`/api/tasks/${url(id)}/workspace`);
-    workspace=result;draft.consent=false;extractConsent=false;submitConfirmed=false;
-    draft.materialIds=draft.materialIds.filter(value=>result.materials.some(material=>material.id===value));
-    draft.referenceIds=draft.referenceIds.filter(value=>result.references.some(material=>material.id===value));
-    return result;
+  const template=()=>customTemplate||workspace?.templates.find(t=>t.id===templateId);
+  function items(){
+    const files=workspace?.sourceFiles||[],linked=new Set(files.map(f=>f.materialId).filter(Boolean));
+    return [...files.map(f=>({key:`s:${f.id}`,name:f.name,source:f,materialId:f.materialId,kind:f.kind})),...(workspace?.materials||[]).filter(m=>!linked.has(m.id)).map(m=>({key:`m:${m.id}`,name:m.title,materialId:m.id,kind:'文字'}))];
   }
+  function resetConsent(){consent=false;const el=document.querySelector('[name="generateConsent"]');if(el)el.checked=false;}
+  function resetConfirmed(){confirmed=false;const el=document.querySelector('[name="finishConfirmed"]');if(el)el.checked=false;}
+  function renderBusy(){
+    const root=document.querySelector('.task-workspace');if(!root)return;
+    root.querySelectorAll('button,input,select,textarea').forEach(el=>el.disabled=true);
+    let el=root.querySelector('.tw-progress');if(!el){root.insertAdjacentHTML('afterbegin','<p class="tw-progress" role="status"></p>');el=root.querySelector('.tw-progress');}el.textContent=progress||'正在处理，请稍候…';
+  }
+  function status(message){progress=message;renderBusy();}
   async function run(work,success=''){
-    if(busy)return;
-    busy=true;error='';syncBusy();
+    if(busy)return;busy=true;error='';progress='正在处理，请稍候…';renderBusy();
     try{await work();if(success)toast(success);}
-    catch(e){error=e.message;toast(e.message,true);}
-    finally{busy=false;requestRender();}
+    catch(e){error=e.message;if(e.status===409&&current())conflict=true;toast(e.message,true);}
+    finally{busy=false;progress='';rerender();}
   }
-  function syncBusy(){document.querySelectorAll('.task-workspace button,.task-workspace input,.task-workspace select,.task-workspace textarea').forEach(el=>el.disabled=true);const root=document.querySelector('.task-workspace');if(root&&!root.querySelector('.tw-progress'))root.insertAdjacentHTML('afterbegin','<p class="tw-progress" role="status">正在处理，请稍候…</p>');}
+  async function reload(){
+    workspace=await api(`/api/tasks/${url(id)}/workspace`);
+    const keys=new Set(items().map(item=>item.key));selected=new Set([...selected].filter(key=>keys.has(key)));
+    resetConsent();return workspace;
+  }
+  async function openDocument(documentId,force=false){
+    const token=loadToken,taskId=id;
+    if(force||!editors.has(documentId)){
+      const {document:d}=await api(`/api/ai/documents/${url(documentId)}`);
+      if(token!==loadToken||taskId!==id)return;
+      editors.set(d.id,{...d,savedTitle:d.title,savedContent:d.content});
+    }
+    selectedDocument=documentId;resetConfirmed();conflict=false;reloadPrompt=false;regeneratePrompt=false;
+  }
   async function open(taskId){
-    if(id===taskId&&workspace){if(!busy)await run(()=>reload());return;}
-    id=taskId;workspace=null;loading=true;error='';step=0;materialEditor=null;extractId='';deleteSourceId='';deleteMaterialId='';editors.clear();selectedDocument='';submitDocument='';submitConfirmed=false;submitNote='';
-    draft={title:'',templateId:'',materialIds:[],referenceIds:[],consent:false};
-    const token=++loadToken;requestRender();
-    try{const result=await api(`/api/tasks/${url(taskId)}/workspace`);if(token!==loadToken)return;workspace=result;draft.title=result.task.title;draft.templateId=result.templates.find(template=>template.id==='builtin-minutes')?.id||result.templates[0]?.id||'';draft.materialIds=result.materials.slice(0,5).map(m=>m.id);}
-    catch(e){if(token===loadToken)error=e.message;}
-    finally{if(token===loadToken){loading=false;requestRender();}}
+    if(id===taskId&&loading)return;
+    if(id===taskId&&workspace){await run(reload);return;}
+    id=taskId;workspace=null;loading=true;error='';materialEditor=null;selected=new Set();selectedDocument='';editors.clear();
+    draftTitle='';templateId='';customTemplate=null;consent=false;confirmed=false;removeKey='';regeneratePrompt=false;reloadPrompt=false;conflict=false;
+    const token=++loadToken;rerender();
+    try{
+      const result=await api(`/api/tasks/${url(taskId)}/workspace`);if(token!==loadToken)return;
+      workspace=result;draftTitle=result.task.title;templateId=result.templates.find(t=>t.id==='builtin-minutes')?.id||result.templates[0]?.id||'';
+      selected=new Set(items().slice(0,5).map(item=>item.key));
+      const latest=[...result.documents].sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];if(latest)await openDocument(latest.id);
+    }catch(e){if(token===loadToken)error=e.message;}
+    finally{if(token===loadToken){loading=false;rerender();}}
   }
   function render(){
-    if(loading)return '<div class="task-workspace"><div class="skeleton">正在打开任务工作区…</div></div>';
+    if(loading)return '<div class="task-workspace"><div class="skeleton">正在打开任务…</div></div>';
     if(!workspace)return `<div class="task-workspace">${button('back','返回任务台账','link-button')}<div class="error-banner">${esc(error||'任务暂时不可用')} ${button('retry','重试','button small')}</div></div>`;
     const t=workspace.task;
-    return `<div class="task-workspace">${button('back',`${icon('chevron')} 返回任务台账`,'link-button tw-back')}<header class="tw-header"><div><div class="tw-eyebrow">第 ${Number(t.number)||'—'} 号任务 ${badge(t)}</div><h1>${esc(t.title)}</h1><div class="tw-meta"><span>负责人：${esc(t.owner)}</span><span>截止日期：${esc(t.dueDate)}（按日期截止）</span><span>提交形式：${esc(t.submissionType||'文本')}</span></div></div><div class="button-row">${button('records','任务记录与材料')}${button('edit-task','编辑任务')}</div></header><nav class="tw-steps" aria-label="任务办理步骤">${steps.map((s,i)=>button('step',`<span class="tw-step-number">${i+1}</span><span>${s}</span>`,`tw-step ${step===i?'active':''}`,`data-step="${i}" ${step===i?'aria-current="step"':''}`)).join('')}</nav>${busy?'<p class="tw-progress" role="status">正在处理，请稍候…</p>':''}${error?`<div class="error-banner" role="alert">${esc(error)}</div>`:''}<section class="panel tw-panel"><div class="tw-panel-heading"><h2>${steps[step]}</h2><p>${['先明确谁来完成、何时提交，以及成稿需要满足的要求。','在这里汇集会议记录、录音和图片，提取后的文字请先核对。上传资料不会完成任务。','本次会议资料提供事实，历史模板与样例只提供结构和写法。','检查人名、数字、日期、议定事项、责任人和完成期限，再确认成稿。','提交已人工确认的成稿，保存正式交付材料并完成任务。'][step]}</p></div><div class="tw-panel-body">${[requirements,sources,drafting,review,submission][step]()}</div></section></div>`;
+    return `<div class="task-workspace">${button('back',`${icon('chevron')} 返回任务台账`,'link-button tw-back')}<header class="tw-header"><div><div class="tw-eyebrow">整理并完成 ${badge(t)}</div><h1>${esc(t.title)}</h1><div class="tw-meta"><span>负责人：${esc(t.owner)}</span><span>截止：${esc(t.dueDate)}</span><span>提交形式：${esc(t.submissionType||'文本')}</span></div></div><div class="button-row">${button('records','任务详情','button small')}${button('edit-task','编辑任务','button small')}</div></header><div class="tw-requirement"><strong>交付要求</strong><p>${esc(t.deliverable)}</p>${t.description?`<details><summary>补充说明</summary><p>${esc(t.description)}</p></details>`:''}</div>${busy?`<p class="tw-progress" role="status">${esc(progress)}</p>`:''}${error?`<div class="error-banner" role="alert">${esc(error)}</div>`:''}${t.status==='已完成'?completed():`<div class="tw-layout"><aside class="tw-inputs panel">${sources()}${templatePanel()}${generatePanel()}</aside><section class="tw-writing panel">${documentPanel()}</section></div>`}</div>`;
   }
-  function next(n,label){return `<div class="tw-next">${button('step',`${label||steps[n]} ${icon('chevron')}`,'button primary',`data-step="${n}"`)}</div>`;}
-  function requirements(){const t=workspace.task;return `<dl class="tw-requirements"><div><dt>负责人</dt><dd>${esc(t.owner)}</dd></div><div><dt>任务分类</dt><dd>${esc(t.category)}</dd></div><div><dt>开始日期</dt><dd>${esc(t.startDate)}</dd></div><div><dt>截止日期</dt><dd>${esc(t.dueDate)}</dd></div></dl><h3 class="tw-section-title">交付要求</h3><p class="tw-prose">${esc(t.deliverable)}</p>${t.description?`<h3 class="tw-section-title">补充说明</h3><p class="tw-prose">${esc(t.description)}</p>`:''}<div class="ai-note">会议任务通常在会议结束当天创建，截止日期可设为三天后。请在交付要求中写明会议基本情况、讨论要点、议定事项、责任分工及完成期限。生成初稿和上传会议资料后，截止提醒仍会继续；正式提交后才完成任务。</div>${next(1,'整理会议资料')}`;}
+  function sourceRow(item){
+    const f=item.source,isOpen=removeKey===item.key;
+    return `<div class="tw-source-row"><label class="tw-source-select"><input type="checkbox" name="sourceKeys" value="${esc(item.key)}" ${selected.has(item.key)?'checked':''}><span><strong>${esc(item.name)}</strong><small>${esc(item.kind)}${f?` · ${size(f.size)}`:''}${!item.materialId?' · 生成时识别':''}</small></span></label><details class="tw-source-more" ${isOpen?'open':''}><summary aria-label="${esc(item.name)}的操作">更多</summary><div class="tw-source-options">${f?`<a href="/api/tasks/${url(id)}/sources/${url(f.id)}/download" download>下载原件</a>`:''}${item.materialId?button('material-open','查看／修改文字','link-button',`data-id="${esc(item.materialId)}"`):'<span class="hint">生成时自动识别正文</span>'}${button('remove','删除','link-button danger',`data-key="${esc(item.key)}"`)}</div>${isOpen?`<div class="tw-inline-confirm"><p>确认删除此资料？已生成文档的来源记录会保留。</p><div class="button-row">${button('remove-cancel','取消','button small')}${button('remove-confirm','确认删除','button small danger',`data-key="${esc(item.key)}"`)}</div></div>`:''}</details></div>`;
+  }
   function sources(){
-    const s=workspace.settings||{},src=workspace.sourceFiles||[];
-    return `<div class="tw-source-tools"><div><label class="button" for="tw-source-file">${icon('upload')} 上传会议资料</label><input class="tw-file-input" id="tw-source-file" type="file" accept=".docx,.txt,.md,.csv,.mp3,.wav,.m4a,.webm,.mp4,.ogg,.flac,.png,.jpg,.jpeg,.webp"><p class="hint">文档：.docx / .txt / .md / .csv，最大 1 兆，本机提取文字。录音最大 20 兆，图片最大 10 兆，先保存原件，另行确认后再发送模型识别。</p></div>${button('material-new','粘贴会议记录','button small')}</div>${src.length?`<div class="tw-source-list">${src.map(f=>`<article class="tw-source"><div class="tw-source-copy"><h3>${esc(f.name)}</h3><p>${esc(f.kind)} · ${size(f.size)} · ${timeText(f.createdAt)}${f.materialId?' · 已提取文字':' · 已保存原件'}</p></div><div class="button-row"><a class="button small" href="/api/tasks/${url(id)}/sources/${url(f.id)}/download" download>下载原件</a>${f.kind==='文档'&&!f.materialId?button('source-extract-local','重新提取正文','button small',`data-id="${esc(f.id)}"`):''}${f.materialId?button('material-open','核对文字','button small',`data-id="${esc(f.materialId)}"`):f.kind!=='文档'?button('extract',f.kind==='录音'?'录音转写':'图片识别','button small',`data-id="${esc(f.id)}"`):''}${button('source-delete','移除','link-button danger',`data-id="${esc(f.id)}"`)}</div>${deleteSourceId===f.id?`<div class="tw-inline-confirm"><p>确认移除此原件及关联文字？已生成文档中的来源快照会保留。</p><div class="button-row">${button('source-delete-cancel','取消','button small')}${button('source-delete-confirm','确认移除','button small danger',`data-id="${esc(f.id)}"`)}</div></div>`:''}</article>`).join('')}</div>`:'<p class="tw-empty">还没有会议原件，可上传资料，也可直接粘贴会议记录。</p>'}${extractId?extractPanel(s,src):''}<div class="tw-section-heading"><h3>可用于起草的文字资料 <span>${workspace.materials.length} 份</span></h3><span class="hint">提取后请核对人名、数字和日期</span></div>${workspace.materials.length?`<div class="tw-materials">${workspace.materials.map(m=>`<article class="tw-material"><div><strong>${esc(m.title)}</strong><p>${timeText(m.updatedAt||m.createdAt)}</p></div><div class="button-row">${button('material-open','查看与修改','button small',`data-id="${esc(m.id)}"`)}${button('material-delete','删除','link-button danger',`data-id="${esc(m.id)}"`)}</div>${deleteMaterialId===m.id?`<div class="tw-inline-confirm"><p>确认删除此文字资料？如有关联原件，原件仍保留；已生成文档的来源快照不受影响。</p><div class="button-row">${button('material-delete-cancel','取消','button small')}${button('material-delete-confirm','确认删除','button small danger',`data-id="${esc(m.id)}"`)}</div></div>`:''}</article>`).join('')}</div>`:'<p class="tw-empty">还没有文字资料。至少整理一份本次素材后才能起草。</p>'}${materialEditor?materialForm():''}${next(2,'选择模板并起草')}`;
+    const list=items();
+    return `<div class="tw-input-section"><div class="tw-section-heading"><h2>素材</h2><span id="tw-source-count">已选 ${selected.size} / 5</span></div><label class="button tw-upload" for="tw-source-file">${icon('upload')} 上传素材</label><input class="tw-file-input" id="tw-source-file" type="file" multiple accept=".docx,.txt,.md,.csv,.mp3,.wav,.m4a,.webm,.mp4,.ogg,.flac,.png,.jpg,.jpeg,.webp"><p class="hint">会议记录、录音或图片，可多选。</p>${list.length?`<div class="tw-sources">${list.map(sourceRow).join('')}</div>`:'<p class="tw-source-empty">上传本次资料，或粘贴会议记录。</p>'}<details class="tw-paste" ${materialEditor?'open':''}><summary>粘贴／修改文字资料</summary>${materialEditor?materialForm():button('material-new','粘贴会议记录','button small')}</details></div>`;
   }
-  function extractPanel(s,src){const source=src.find(f=>f.id===extractId);if(!source)return '';const audio=source.kind==='录音',model=audio?s.transcriptionModel:s.visionModel||s.model,available=s.enabled&&model&&!s.configError;return `<form id="tw-extract-form" class="tw-inset"><h3>${audio?'转写录音':'识别图片文字'}：${esc(source.name)}</h3><p class="hint">${audio?'录音会发送给转写服务，返回文字后请人工核对。':'只识别图片中的文字，不保留排版。请使用支持图片输入的模型；不支持时可手动粘贴文字。'}</p><div class="ai-note">发送至：${esc(endpoint())}<br>使用模型：${esc(model||'尚未配置')}</div>${!available?'<p class="hint">尚未配置并启用对应模型，请先前往「AI 文档 → 模型设置」完成配置。</p>':''}${check('extractConsent','我同意将上述原件发送至所示服务进行识别',extractConsent,'required')}<div class="button-row">${button('extract-cancel','取消','button small')}<button type="submit" class="button small primary" ${!available?'disabled':''}>确认发送并${audio?'转写':'识别'}</button></div></form>`;}
-  function materialForm(){const m=materialEditor;return `<form id="tw-material-form" class="tw-inset"><h3>${m.id?'核对与修改文字':'粘贴会议记录'}</h3><p class="hint">只保存至本任务，选择起草并确认发送后才会提供给模型。切换步骤会保留未保存内容。</p>${text('资料名称','materialTitle',m.title,'required maxlength="200"')}${area('资料正文','materialContent',m.content,'required maxlength="20000" rows="12"')}<div class="button-row"><button type="submit" class="button primary">保存文字资料</button>${button('material-cancel','关闭编辑','button')}</div>${m.dirty?'<p class="hint">内容尚未保存。</p>':''}</form>`;}
-  function drafting(){const template=workspace.templates.find(t=>t.id===draft.templateId);return `<form id="tw-draft-form" class="ai-form-stack">${!ready()?'<div class="ai-note">文档模型尚未配置或启用。请先在「AI 文档 → 模型设置」完成配置，再回到本任务起草。</div>':''}${text('纪要名称','draftTitle',draft.title,'required maxlength="200"')}<div class="field"><label for="tw-template">文档模板</label><select id="tw-template" name="templateId" required><option value="">请选择模板</option>${workspace.templates.map(t=>option(t.id,draft.templateId,t.name)).join('')}</select><span class="hint">模板管理与历史文档识别位于「AI 文档 → 文档模板」。</span></div>${template?`<details class="tw-preview"><summary>查看模板结构与写作要求</summary><pre>${esc(template.content)}</pre></details>`:''}<fieldset class="ai-fieldset"><legend>本任务会议资料（选择 1 至 5 份）</legend>${workspace.materials.length?workspace.materials.map(m=>check('materialIds',esc(m.title),draft.materialIds.includes(m.id),`value="${esc(m.id)}"`)).join(''):'<p class="hint">还没有本次会议文字资料，请返回会议资料步骤添加。</p>'}</fieldset><fieldset class="ai-fieldset"><legend>历史样例（选填，最多 3 份）</legend><p class="hint">仅参考结构和写法，不沿用历史人员、日期、数据或结论。</p>${workspace.references.length?workspace.references.map(m=>check('referenceIds',esc(m.title),draft.referenceIds.includes(m.id),`value="${esc(m.id)}"`)).join(''):'<p class="hint">暂无历史样例，可直接使用模板起草。</p>'}</fieldset><div class="ai-note">发送至：<strong>${esc(endpoint())}</strong><br>使用模型：<strong>${esc(workspace.settings?.model||'尚未配置')}</strong><br>本次将发送任务名称、负责人、截止日期、交付要求、补充说明、所选文字资料、历史样例及模板。资料中缺失的信息应标记为“待核实”，生成后需人工审核。</div>${check('draftConsent','我已核对任务要求及所选正文，同意发送给上述模型服务起草',draft.consent,'required')}<div class="button-row"><button type="submit" class="button primary" ${!ready()?'disabled':''}>${icon('edit')} 生成会议纪要初稿</button>${button('step','已有初稿，前往核对','button','data-step="3"')}</div></form>`;}
-  function documentList(){return `<div class="tw-document-list">${workspace.documents.map(d=>button('document',`<strong>${esc(d.title)}</strong><span>第 ${Number(d.revision)} 版 · ${esc(d.status)} · ${timeText(d.updatedAt)}</span>`,`tw-document ${selectedDocument===d.id?'active':''}`,`data-id="${esc(d.id)}"`)).join('')}</div>`;}
-  function review(){const d=selectedEditor();return `${workspace.documents.length?documentList():'<p class="tw-empty">本任务尚无纪要初稿，请先选择会议资料与模板起草。</p>'}${d?documentEditor(d):workspace.documents.length?'<p class="tw-empty">选择上方文档，开始核对与修改。</p>':''}${next(4,'前往正式提交')}`;}
-  function documentEditor(d){const changed=dirty(d),confirmed=d.status==='已确认'&&!changed;return `<div class="tw-editor"><div class="tw-section-heading"><h3>核对与修改正文</h3><span class="badge ${confirmed?'done':'todo'}">${changed?'有未保存修改':esc(d.status)} · 第 ${Number(d.revision)} 版</span></div><form id="tw-document-form" class="ai-form-stack">${text('文档名称','documentTitle',d.title,'required maxlength="200"')}${area('纪要正文','documentContent',d.content,'required maxlength="60000" rows="20"')}<p id="tw-dirty-status" class="hint" role="status">${changed?'修改尚未保存，请先保存再确认。':'修改保存后，原有确认会作废，需重新核对。'}</p><div><button type="submit" class="button" id="tw-save-document">保存修改</button></div></form><form id="tw-review-form" class="tw-review-form ai-form-stack"><h3>人工核对与初稿评价</h3><p class="hint">请检查人名、数字、日期、决议、责任人和完成期限。初稿评价用于记录 AI 原始初稿的质量，填写“需修改”或“不可用”也必须先将当前正文修改到可提交状态。</p><div class="field"><label for="tw-quality">AI 原始初稿质量</label><select id="tw-quality" name="quality" required ${changed||confirmed?'disabled':''}><option value="">请选择评价</option>${['可用','需修改','不可用'].map(v=>option(v,d.quality||'')).join('')}</select></div>${area('核对说明','reviewNote',d.reviewNote||'','required maxlength="5000" rows="3"')}${check('reviewConfirmed','我已完成人工核对，确认当前保存版本可作为正式成稿使用',confirmed||!!d.reviewConfirmed,`required ${changed||confirmed?'disabled':''}`)}<div><button type="submit" class="button primary" id="tw-confirm-document" ${changed||confirmed?'disabled':''}>${confirmed?'当前版本已确认':'确认当前版本'}</button></div></form><details class="tw-preview"><summary>查看原始初稿与来源</summary><h4>AI 原始初稿</h4><pre>${esc(d.originalContent||'')}</pre>${(d.sourceSnapshot||d.sources||[]).map(s=>`<h4>${esc(s.title||'来源资料')}</h4><pre>${esc(s.content||'')}</pre>`).join('')}<h4>生成时使用的模板</h4><pre>${esc(d.templateSnapshot?.content||'')}</pre></details><div class="button-row tw-export"><a class="button small ${!confirmed?'tw-disabled':''}" ${confirmed?`href="/api/ai/documents/${url(d.id)}/export?format=docx" download`:'aria-disabled="true"'}>${icon('download')} 下载 Word 成稿</a><span class="hint">下载不会完成任务，正式提交后才完成。</span></div></div>`;}
-  function submission(){const t=workspace.task,attachments=t.attachments||[],confirmed=workspace.documents.filter(d=>d.status==='已确认'),ed=editors.get(submitDocument),chosen=workspace.documents.find(d=>d.id===submitDocument);const can=chosen&&chosen.status==='已确认'&&(!ed||!dirty(ed))&&t.status!=='已完成'&&['文本','不限'].includes(t.submissionType||'文本');return `${t.status==='已完成'?`<div class="tw-completed">${icon('checkCircle')}<div><h3>任务已完成</h3><p>完成时间：${timeText(t.completedAt)}</p><p>已保存正式交付材料，截止提醒已停止。</p></div></div>`:''}${attachments.length?`<h3 class="tw-section-title">已提交的正式材料</h3><div class="tw-submitted">${attachments.map(a=>`<article><div><strong>${esc(a.name)}</strong><p>${timeText(a.uploadedAt)}${a.note?` · ${esc(a.note)}`:''}</p></div><div class="button-row"><a class="button small" href="/api/attachments/${url(a.id)}" download>${icon('download')} 下载</a>${action('delete-attachment','删除','link-button danger',`data-id="${esc(a.id)}" data-task-id="${esc(id)}" aria-label="删除已提交材料：${esc(a.name)}"`)}</div></article>`).join('')}</div><p class="hint">删除、恢复材料及历史提交记录可在上方「任务记录与材料」中查看。</p>`:''}${t.status!=='已完成'?`<form id="tw-submit-form" class="ai-form-stack"><div class="ai-note"><strong>交付要求：</strong><br>${esc(t.deliverable)}</div><div class="field"><label for="tw-submit-document">选择已确认成稿</label><select id="tw-submit-document" name="documentId" required><option value="">请选择成稿</option>${confirmed.map(d=>option(d.id,submitDocument,`${d.title}（第 ${d.revision} 版）`)).join('')}</select></div>${!confirmed.length?'<p class="hint">本任务还没有已确认成稿，请先到「核对修改」确认当前保存版本。</p>':''}${chosen?`<p class="hint">将提交第 ${Number(chosen.revision)} 版。${ed&&dirty(ed)?'该文档有未保存修改，请先保存并重新确认。':''}</p>${ed?`<details class="tw-preview"><summary>检查待提交的保存版本</summary><pre>${esc(ed.savedContent)}</pre></details>`:''}`:''}${!['文本','不限'].includes(t.submissionType||'文本')?`<p class="hint">本任务要求提交${esc(t.submissionType)}，直接提交生成的 Word 不符合格式要求。请将确认成稿整理为要求格式后，使用下方“上传其他交付文件”。</p>`:''}${area('提交说明（选填）','submitNote',submitNote,'maxlength="2000" rows="3"')}${check('submitConfirmed','我已按交付要求核对当前成稿，确认提交并完成任务',submitConfirmed,'required')}<div class="button-row"><button type="submit" class="button primary" ${!can?'disabled':''}>提交纪要并完成任务</button>${button('manual-complete','上传其他交付文件','button')}</div><p class="hint">提交后系统将当前确认版本生成为 Word，保存至本任务正式材料，并记录提交版本、提交人和时间。</p></form>`:`<div class="button-row">${button('reopen','重新打开任务','button')}<span class="hint">需要补充交付时，可重新打开后继续处理。</span></div>`}`;}
-  async function openMaterial(materialId){
-    if(materialEditor?.dirty&&materialEditor.id!==materialId){error='当前资料有未保存修改，请先保存或关闭编辑，再打开其他资料。';return;}
-    const r=await api(`/api/ai/materials/${url(materialId)}`);materialEditor={...r.material,dirty:false};
+  function materialForm(){const m=materialEditor;return `<form id="tw-material-form" class="tw-material-form">${field('资料名称','materialTitle',m.title,'required maxlength="200"')}${area('资料正文','materialContent',m.content,'required maxlength="20000" rows="8"')}<div class="button-row"><button type="submit" class="button small">保存资料</button>${button('material-close','关闭','link-button')}</div>${m.discardPrompt?`<p class="hint">修改尚未保存。${button('material-discard','放弃修改','link-button danger')}</p>`:''}<span id="tw-material-status" class="hint">${m.dirty?'尚未保存，生成时会先保存。':''}</span></form>`;}
+  function templatePanel(){
+    const t=template();
+    return `<div class="tw-input-section"><div class="tw-section-heading"><h2>模板</h2><label class="link-button" for="tw-template-file">上传模板</label><input class="tw-file-input" id="tw-template-file" type="file" accept=".docx,.txt,.md,.csv"></div><label class="visually-hidden" for="tw-template-choice">选择模板</label><select id="tw-template-choice" name="templateId">${customTemplate?option('__custom','__custom',`本次：${customTemplate.name}`):''}${workspace.templates.map(t=>option(t.id,customTemplate?'__custom':templateId,t.name)).join('')}</select>${customTemplate?`<div class="tw-custom-label"><span>仅用于本次文档</span>${button('template-clear','清除上传模板','link-button')}</div>`:''}${t?`<details class="tw-template-details"><summary>查看／调整模板内容</summary><div class="tw-template-fields">${field('模板名称','templateName',t.name,'maxlength="100"')}${area('模板正文与写作要求','templateContent',t.content,'maxlength="20000" rows="9"')}</div></details>`:''}</div>`;
   }
-  async function openDocument(documentId){
-    selectedDocument=documentId;
-    if(!editors.has(documentId)){const r=await api(`/api/ai/documents/${url(documentId)}`),d=r.document;editors.set(documentId,{...d,savedTitle:d.title,savedContent:d.content,quality:'',reviewNote:'',reviewConfirmed:false});}
+  function generatePanel(){
+    const s=workspace.settings||{};let host='尚未配置';try{host=new URL(s.baseUrl).host;}catch{}
+    return `<div class="tw-input-section tw-generation"><div class="tw-model"><span>${esc(host)}</span><strong>${esc(s.model||'尚未配置模型')}</strong></div><details class="tw-service-details"><summary>发送范围与文件支持</summary><p>生成时会发送任务要求、所选素材及模板；未识别的录音、图片会先发送原件识别。原件保存在本机，模板只参考结构，不沿用历史事实。</p><p>录音模型：${esc(s.transcriptionModel||'未配置')}<br>图片模型：${esc(s.visionModel||s.model||'未配置')}</p><p>文档／模板：.docx、.txt、.md、.csv，最大 1 兆。录音最大 20 兆，图片最大 10 兆；每次最多选 5 份素材。</p></details>${!ready()?'<p class="hint">请先到「AI 文档 → 模型设置」配置并启用模型。</p>':''}<label class="ai-check tw-consent"><input type="checkbox" name="generateConsent" ${consent?'checked':''}><span>我同意将任务要求、所选素材（含待识别原件）和模板发送至上述模型服务</span></label>${regeneratePrompt?`<div class="tw-inline-confirm"><p>当前正文有未保存修改。继续生成会打开一份新草稿，当前修改仍会保留在原草稿中；离开页面前请保存。</p><div class="button-row">${button('generate-cancel','取消','button small')}${button('generate-confirm','继续生成','button small primary')}</div></div>`:''}${button('generate',`${icon('edit')} ${current()?'重新生成':'AI 生成'}`,'button primary tw-generate',!ready()?'disabled':'')}</div>`;
+  }
+  function documentPanel(){
+    const d=current(),canFinish=d&&['文本','不限'].includes(workspace.task.submissionType||'文本');
+    return `<div class="tw-writing-heading"><h2>正文</h2>${workspace.documents.length>1?`<label class="tw-draft-picker"><span>历史草稿</span><select name="documentId" aria-label="选择历史草稿">${workspace.documents.map(doc=>option(doc.id,selectedDocument,`${doc.title} · 第 ${doc.revision} 版${dirty(editors.get(doc.id))?'（未保存）':''}`)).join('')}</select></label>`:''}<span id="tw-document-status" class="hint">${d?(dirty(d)?'修改尚未保存':`已保存 · 第 ${d.revision} 版`):'生成后可直接修改'}</span></div><form id="tw-document-form" class="tw-document-form">${field('文档名称','documentTitle',d?.title||draftTitle,'required maxlength="200"')}${area('正文内容','documentContent',d?.content||'',`required maxlength="60000" rows="22" placeholder="上传素材并选择模板后，点击「AI 生成」。生成的正文将在这里显示，可直接修改。" ${!d?'disabled':''}`)}${conflict?`<div class="tw-conflict"><p>文档版本发生变化，当前编辑内容已保留。请先复制需要保留的正文，再读取最新版本。</p>${reloadPrompt?`<div class="button-row">${button('reload-cancel','取消','button small')}${button('reload-confirm','放弃当前修改并重新读取','button small')}</div>`:button('reload-document','重新读取最新版本','button small')}</div>`:''}<div class="tw-document-actions"><button type="submit" class="button" ${!d?'disabled':''}>保存草稿</button>${button('manual-complete','直接上传成稿','link-button')}</div></form><form id="tw-finish-form" class="tw-finish-form"><label class="ai-check"><input type="checkbox" name="finishConfirmed" ${confirmed?'checked':''} ${!canFinish?'disabled':''}><span>我已核对内容，符合任务交付要求</span></label>${!['文本','不限'].includes(workspace.task.submissionType||'文本')?`<p class="hint">本任务要求${esc(workspace.task.submissionType)}，请通过“直接上传成稿”提交相应文件。</p>`:''}<button type="submit" class="button primary" ${!canFinish?'disabled':''}>保存并提交，完成任务</button></form>${d?`<details class="tw-history"><summary>生成记录与来源</summary><p class="hint">${esc(d.model||'')} · ${timeText(d.createdAt)}<br>模板：${esc(d.templateSnapshot?.name||'')}</p>${(d.sourceSnapshot||d.sources||[]).map(s=>`<h4>${esc(s.title||'来源资料')}</h4><pre>${esc(s.content||'')}</pre>`).join('')}<h4>原始初稿</h4><pre>${esc(d.originalContent||'')}</pre></details>`:''}`;
+  }
+  function completed(){const t=workspace.task;return `<section class="panel tw-complete-panel"><div class="tw-completed">${icon('checkCircle')}<div><h2>任务已完成</h2><p>${timeText(t.completedAt)}</p></div></div><div class="tw-submitted">${(t.attachments||[]).map(a=>`<article><div><strong>${esc(a.name)}</strong><p>${timeText(a.uploadedAt)}</p></div><div class="button-row"><a class="button small" href="/api/attachments/${url(a.id)}" download>${icon('download')} 下载</a>${action('delete-attachment','删除','link-button danger',`data-id="${esc(a.id)}" data-task-id="${esc(id)}"`)}</div></article>`).join('')}</div><div class="button-row">${button('reopen','重新打开任务','button')}${button('records','查看记录与已删除材料','link-button')}</div></section>`;}
+  async function saveMaterial(){
+    if(!materialEditor)return;const m=materialEditor;
+    if(!m.title.trim()||!m.content.trim())throw new Error('请填写资料名称和正文。');
+    const r=await post(m.id?`/api/ai/materials/${url(m.id)}`:'/api/ai/materials',{title:m.title,content:m.content,kind:'素材',taskId:id},m.id?'PATCH':'POST');
+    materialEditor={...r.material,dirty:false};await reload();
+    const item=items().find(item=>item.materialId===r.material.id);if(!m.id&&item&&selected.size<5)selected.add(item.key);
+    return r.material;
+  }
+  async function generate(){
+    if(!consent)throw new Error('请先勾选同意发送所选资料至上述模型服务。');
+    if(materialEditor?.dirty&&!materialEditor.id&&selected.size>=5)throw new Error('已选 5 份素材，请先取消一份，再将正在粘贴的文字一同用于生成。');
+    const selectedBeforeSave=new Set(selected);
+    if(materialEditor?.dirty){status('正在保存文字资料…');await saveMaterial();for(const key of selectedBeforeSave)selected.add(key);}
+    const chosen=items().filter(item=>selected.has(item.key));
+    if(!chosen.length||chosen.length>5)throw new Error('请选择 1 至 5 份素材。');
+    const t=template();if(!t?.name?.trim()||!t?.content?.trim())throw new Error('请选择或上传有效模板。');
+    if(!ready())throw new Error('请先配置并启用文档模型。');
+    if(chosen.some(item=>item.source?.kind==='录音'&&!item.materialId)&&!workspace.settings.transcriptionModel)throw new Error('所选录音需要转写模型，请在模型设置中填写，或暂时取消勾选该录音。');
+    const title=current()?.title||draftTitle;if(!title.trim())throw new Error('请填写文档名称。');
+    const materialIds=[];
+    for(const item of chosen){
+      if(item.materialId){materialIds.push(item.materialId);continue;}
+      status(`正在识别：${item.name}`);
+      try{const r=await post(`/api/tasks/${url(id)}/sources/${url(item.source.id)}/extract`,{consent:true});materialIds.push(r.material.id);}
+      catch(e){await reload();throw new Error(`“${item.name}”识别失败：${e.message} 原件已保留，可取消勾选后重试。`);}
+    }
+    status('正在生成正文…');
+    const body={title,materialIds,referenceIds:[],consent:true,...(customTemplate?{template:{name:customTemplate.name,content:customTemplate.content}}:{templateId})};
+    let r;try{r=await post(`/api/tasks/${url(id)}/draft`,body);}catch(e){await reload();throw e;}await reload();await onTaskChange();await openDocument(r.document.id);regeneratePrompt=false;
   }
   async function onAction(name,el){
-    if(busy)return;
-    const target=el.dataset.id;
+    if(busy)return;const target=el.dataset.id;
     if(name==='back'){navigate('tasks');return;}
-    if(name==='edit-task'){openTaskForm(id);return;}
     if(name==='records'){openRecords(id);return;}
+    if(name==='edit-task'){openTaskForm(id);return;}
     if(name==='manual-complete'){openCompletion(id);return;}
-    if(name==='step'){step=Number(el.dataset.step);error='';if(step===4&&!submitDocument){submitDocument=workspace.documents.find(d=>d.id===selectedDocument&&d.status==='已确认')?.id||workspace.documents.find(d=>d.status==='已确认')?.id||'';if(submitDocument&&!editors.has(submitDocument)){await run(()=>openDocument(submitDocument));return;}}requestRender();return;}
     if(name==='retry'){workspace=null;await open(id);return;}
-    if(name==='material-new'){if(materialEditor?.dirty){error='请先保存或关闭当前正在编辑的资料。';requestRender();return;}materialEditor={id:'',title:'会议记录',content:'',dirty:false};requestRender();return;}
-    if(name==='material-cancel'){if(materialEditor?.dirty){materialEditor.discardPrompt=true;error='资料修改尚未保存。点击“保存文字资料”保留，或再次点击“关闭编辑”放弃修改。';if(materialEditor.discardConfirmed){materialEditor=null;error='';}else materialEditor.discardConfirmed=true;}else materialEditor=null;requestRender();return;}
-    if(name==='material-open'){await run(()=>openMaterial(target));return;}
-    if(name==='source-extract-local'){await run(async()=>{const r=await post(`/api/tasks/${url(id)}/sources/${url(target)}/extract`,{});await reload();if(r.material&&!materialEditor?.dirty)materialEditor={...r.material,dirty:false};draft.consent=false;},'已在本机重新提取正文，请核对文字');return;}
-    if(name==='extract'){extractId=target;extractConsent=false;requestRender();return;}
-    if(name==='extract-cancel'){extractId='';requestRender();return;}
-    if(name==='source-delete'){deleteSourceId=target;requestRender();return;}
-    if(name==='source-delete-cancel'){deleteSourceId='';requestRender();return;}
-    if(name==='source-delete-confirm'){await run(async()=>{const removed=workspace.sourceFiles.find(s=>s.id===target);await post(`/api/tasks/${url(id)}/sources/${url(target)}`,{},'DELETE');if(materialEditor?.id===removed?.materialId)materialEditor=null;draft.materialIds=draft.materialIds.filter(v=>v!==removed?.materialId);draft.consent=false;deleteSourceId='';await reload();},'会议原件及关联文字已移除');return;}
-    if(name==='material-delete'){deleteMaterialId=target;requestRender();return;}
-    if(name==='material-delete-cancel'){deleteMaterialId='';requestRender();return;}
-    if(name==='material-delete-confirm'){await run(async()=>{await post(`/api/ai/materials/${url(target)}`,{},'DELETE');if(materialEditor?.id===target)materialEditor=null;draft.materialIds=draft.materialIds.filter(v=>v!==target);draft.consent=false;deleteMaterialId='';await reload();},'文字资料已删除');return;}
-    if(name==='document'){await run(()=>openDocument(target));return;}
+    if(name==='material-new'){materialEditor={id:'',title:'会议记录',content:'',dirty:false};rerender();return;}
+    if(name==='material-close'){if(materialEditor?.dirty)materialEditor.discardPrompt=true;else materialEditor=null;rerender();return;}
+    if(name==='material-discard'){materialEditor=null;rerender();return;}
+    if(name==='material-open'){if(materialEditor?.dirty&&materialEditor.id!==target){error='当前文字资料尚未保存，请先保存或关闭编辑。';rerender();return;}await run(async()=>{if(materialEditor?.id===target)return;const r=await api(`/api/ai/materials/${url(target)}`);materialEditor={...r.material,dirty:false};});return;}
+    if(name==='remove'){removeKey=el.dataset.key;rerender();return;}
+    if(name==='remove-cancel'){removeKey='';rerender();return;}
+    if(name==='remove-confirm'){await run(async()=>{const item=items().find(item=>item.key===el.dataset.key);if(!item)return;if(item.materialId===materialEditor?.id&&materialEditor.dirty)throw new Error('此资料有未保存修改，请先保存或放弃修改。');if(item.source)await post(`/api/tasks/${url(id)}/sources/${url(item.source.id)}`,{},'DELETE');else await post(`/api/ai/materials/${url(item.materialId)}`,{},'DELETE');if(item.materialId===materialEditor?.id)materialEditor=null;selected.delete(item.key);removeKey='';await reload();},'资料已删除');return;}
+    if(name==='template-clear'){customTemplate=null;resetConsent();rerender();return;}
+    if(name==='generate-cancel'){regeneratePrompt=false;rerender();return;}
+    if(name==='generate'||name==='generate-confirm'){
+      if(name==='generate'&&dirty(current())){regeneratePrompt=true;rerender();return;}
+      await run(generate,'正文已生成，可直接修改后提交');return;
+    }
+    if(name==='reload-document'){reloadPrompt=true;rerender();return;}
+    if(name==='reload-cancel'){reloadPrompt=false;rerender();return;}
+    if(name==='reload-confirm'){await run(()=>openDocument(selectedDocument,true),'已读取最新保存版本');return;}
     if(name==='reopen'){await run(async()=>{await post(`/api/tasks/${url(id)}`,{status:'进行中'},'PATCH');await reload();await onTaskChange();},'任务已重新打开');}
   }
   async function onSubmit(form){
     if(busy)return;
-    if(form.id==='tw-material-form')await run(async()=>{if(!materialEditor)return;const m=materialEditor;const r=await post(m.id?`/api/ai/materials/${url(m.id)}`:'/api/ai/materials',{title:m.title,content:m.content,kind:'素材',taskId:id},m.id?'PATCH':'POST');materialEditor={...r.material,dirty:false};await reload();if(!draft.materialIds.includes(r.material.id)&&draft.materialIds.length<5)draft.materialIds.push(r.material.id);draft.consent=false;},'会议文字资料已保存');
-    if(form.id==='tw-extract-form')await run(async()=>{if(!extractConsent)throw new Error('请先确认发送原件至所示模型服务。');const r=await post(`/api/tasks/${url(id)}/sources/${url(extractId)}/extract`,{consent:true});extractId='';extractConsent=false;await reload();if(r.material){if(!materialEditor?.dirty)materialEditor={...r.material,dirty:false};if(!draft.materialIds.includes(r.material.id)&&draft.materialIds.length<5)draft.materialIds.push(r.material.id);}draft.consent=false;},'已提取文字，请核对并修正内容');
-    if(form.id==='tw-draft-form')await run(async()=>{if(materialEditor?.dirty)throw new Error('会议资料有未保存修改，请返回会议资料步骤保存后再起草。');if(!draft.consent)throw new Error('请先核对并同意发送任务要求及所选资料。');if(!draft.materialIds.length||draft.materialIds.length>5)throw new Error('请选择 1 至 5 份本次会议资料。');if(draft.referenceIds.length>3)throw new Error('历史样例最多选择 3 份。');if(!draft.templateId)throw new Error('请选择文档模板。');const r=await post(`/api/tasks/${url(id)}/draft`,{title:draft.title,templateId:draft.templateId,materialIds:draft.materialIds,referenceIds:draft.referenceIds,consent:true});await reload();await onTaskChange();draft.consent=false;await openDocument(r.document.id);step=3;},'纪要初稿已生成，请人工核对');
-    if(form.id==='tw-document-form')await run(async()=>{const d=selectedEditor();if(!d)return;const r=await post(`/api/ai/documents/${url(d.id)}`,{title:d.title,content:d.content,revision:d.revision},'PATCH');editors.set(d.id,{...r.document,savedTitle:r.document.title,savedContent:r.document.content,quality:d.quality,reviewNote:d.reviewNote,reviewConfirmed:false});submitConfirmed=false;await reload();},'修改已保存，请重新核对确认当前版本');
-    if(form.id==='tw-review-form')await run(async()=>{const d=selectedEditor();if(!d||dirty(d))throw new Error('请先保存文档修改。');if(!d.reviewConfirmed)throw new Error('请完成人工核对并勾选确认。');if(!d.quality||!d.reviewNote.trim())throw new Error('请填写初稿评价和核对说明。');const r=await post(`/api/ai/documents/${url(d.id)}/review`,{revision:d.revision,confirmed:true,quality:d.quality,reviewNote:d.reviewNote});editors.set(d.id,{...r.document,savedTitle:r.document.title,savedContent:r.document.content,quality:d.quality,reviewNote:d.reviewNote,reviewConfirmed:false});submitDocument=d.id;submitConfirmed=false;await reload();},'当前版本已确认，可前往正式提交');
-    if(form.id==='tw-submit-form')await run(async()=>{const d=workspace.documents.find(d=>d.id===submitDocument),ed=editors.get(submitDocument);if(!d||d.status!=='已确认'||dirty(ed))throw new Error('请选择已保存并确认的当前成稿。');if(!submitConfirmed)throw new Error('请核对交付要求并勾选提交确认。');await post(`/api/tasks/${url(id)}/submit`,{documentId:d.id,revision:d.revision,confirmed:true,note:submitNote});submitConfirmed=false;await reload();await onTaskChange();},'正式纪要已提交，任务已完成');
+    if(form.id==='tw-material-form')await run(saveMaterial,'文字资料已保存');
+    if(form.id==='tw-document-form')await run(async()=>{const d=current();if(!d)return;const r=await post(`/api/ai/documents/${url(d.id)}`,{title:d.title,content:d.content,revision:d.revision},'PATCH');editors.set(d.id,{...r.document,savedTitle:r.document.title,savedContent:r.document.content});conflict=false;resetConfirmed();await reload();},'草稿已保存');
+    if(form.id==='tw-finish-form')await run(async()=>{const d=current();if(!d)throw new Error('请先生成正文。');if(!confirmed)throw new Error('请核对正文并勾选确认。');if(!d.title.trim()||!d.content.trim())throw new Error('文档名称和正文不能为空。');status('正在保存并提交…');const r=await post(`/api/tasks/${url(id)}/finish`,{documentId:d.id,revision:d.revision,title:d.title,content:d.content,confirmed:true});if(r.document)editors.set(d.id,{...r.document,savedTitle:r.document.title,savedContent:r.document.content});else editors.set(d.id,{...d,savedTitle:d.title,savedContent:d.content});confirmed=false;await reload();await onTaskChange();},'成稿已提交，任务已完成');
   }
   function input(target){
-    const name=target.name,value=target.value;
-    if(name==='draftTitle'){draft.title=value;draft.consent=false;const consent=document.querySelector('[name="draftConsent"]');if(consent)consent.checked=false;}
-    if(name==='materialTitle'&&materialEditor){materialEditor.title=value;materialEditor.dirty=true;materialEditor.discardConfirmed=false;}
-    if(name==='materialContent'&&materialEditor){materialEditor.content=value;materialEditor.dirty=true;materialEditor.discardConfirmed=false;}
-    const d=selectedEditor();
-    if(d&&name==='documentTitle')d.title=value;
-    if(d&&name==='documentContent')d.content=value;
-    if(d&&name==='reviewNote')d.reviewNote=value;
-    if(name==='submitNote')submitNote=value;
-    if(d&&(name==='documentTitle'||name==='documentContent')){d.reviewConfirmed=false;submitConfirmed=false;const changed=dirty(d),confirmed=d.status==='已确认'&&!changed;const hint=document.querySelector('#tw-dirty-status');if(hint)hint.textContent=changed?'修改尚未保存，请先保存再确认。':'修改保存后，原有确认会作废，需重新核对。';document.querySelectorAll('#tw-review-form input,#tw-review-form select,#tw-review-form button').forEach(el=>{el.disabled=changed||confirmed;if(el.type==='checkbox')el.checked=false;});}
+    const {name,value}=target;
+    if(name==='materialTitle'&&materialEditor)materialEditor.title=value;
+    if(name==='materialContent'&&materialEditor)materialEditor.content=value;
+    if((name==='materialTitle'||name==='materialContent')&&materialEditor){materialEditor.dirty=true;materialEditor.discardPrompt=false;resetConsent();const el=document.querySelector('#tw-material-status');if(el)el.textContent='尚未保存，生成时会先保存。';}
+    if(name==='templateName'||name==='templateContent'){if(!customTemplate)customTemplate={name:template()?.name||'',content:template()?.content||''};if(name==='templateName')customTemplate.name=value;else customTemplate.content=value;resetConsent();}
+    const d=current();
+    if(name==='documentTitle'){draftTitle=value;if(d)d.title=value;}
+    if(name==='documentContent'&&d)d.content=value;
+    if(name==='documentTitle'||name==='documentContent'){resetConfirmed();const el=document.querySelector('#tw-document-status');if(el)el.textContent=dirty(d)?'修改尚未保存':'已保存';}
   }
+  const readBase64=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('文件读取失败，请重新选择。'));reader.readAsDataURL(file);});
   async function change(target){
-    const name=target.name;
-    if(target.id==='tw-source-file'){const file=target.files?.[0];if(!file)return;await run(async()=>{const ext=file.name.split('.').at(-1).toLowerCase(),max=['mp3','wav','m4a','webm','mp4','ogg','flac'].includes(ext)?20*1048576:['png','jpg','jpeg','webp'].includes(ext)?10*1048576:1048576;if(!file.size||file.size>max)throw new Error(`文件必须非空且不超过 ${max/1048576} 兆。`);const contentBase64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('文件读取失败，请重新选择。'));reader.readAsDataURL(file);});const r=await post(`/api/tasks/${url(id)}/sources`,{file:{name:file.name,contentBase64}});await reload();if(r.material){if(!materialEditor?.dirty)materialEditor={...r.material,dirty:false};if(!draft.materialIds.includes(r.material.id)&&draft.materialIds.length<5)draft.materialIds.push(r.material.id);}draft.consent=false;},'会议资料已保存');return;}
-    if(name==='templateId'){draft.templateId=target.value;draft.consent=false;requestRender();}
-    if(name==='materialIds'||name==='referenceIds'){const key=name;draft[key]=target.checked?[...new Set([...draft[key],target.value])]:draft[key].filter(v=>v!==target.value);draft.consent=false;const consent=document.querySelector('[name="draftConsent"]');if(consent)consent.checked=false;}
-    if(name==='draftConsent')draft.consent=target.checked;
-    if(name==='extractConsent')extractConsent=target.checked;
-    if(name==='reviewConfirmed'&&selectedEditor())selectedEditor().reviewConfirmed=target.checked;
-    if(name==='quality'&&selectedEditor())selectedEditor().quality=target.value;
-    if(name==='submitConfirmed')submitConfirmed=target.checked;
-    if(target.id==='tw-submit-document'){submitDocument=target.value;submitConfirmed=false;if(submitDocument)await run(()=>openDocument(submitDocument));else requestRender();}
+    const {name}=target;
+    if(target.id==='tw-source-file'){
+      const files=[...target.files||[]];if(!files.length)return;
+      await run(async()=>{
+        const failures=[];let count=0,unselected=0;
+        for(const file of files){
+          try{
+            const ext=file.name.split('.').at(-1).toLowerCase(),audio=['mp3','wav','m4a','webm','mp4','ogg','flac'],images=['png','jpg','jpeg','webp'];
+            if(![...audio,...images,'docx','txt','md','csv'].includes(ext))throw new Error('不支持此文件格式');
+            const max=(audio.includes(ext)?20:images.includes(ext)?10:1)*1048576;if(!file.size||file.size>max)throw new Error(`文件须非空且不超过 ${max/1048576} 兆`);
+            status(`正在保存：${file.name}`);const r=await post(`/api/tasks/${url(id)}/sources`,{file:{name:file.name,contentBase64:await readBase64(file)}});await reload();count++;if(selected.size<5)selected.add(`s:${r.source.id}`);else unselected++;
+          }catch(e){failures.push(`${file.name}：${e.message}`);}
+        }
+        await onTaskChange();if(failures.length)throw new Error(`已保存 ${count} 份资料。${failures.join('；')}`);toast(`已保存 ${count} 份资料${unselected?`，${unselected} 份未勾选（最多 5 份）`:''}`);
+      });return;
+    }
+    if(target.id==='tw-template-file'){
+      const file=target.files?.[0];if(!file)return;
+      await run(async()=>{if(!/\.(docx|txt|md|csv)$/i.test(file.name)||!file.size||file.size>1048576)throw new Error('请使用不超过 1 兆的 .docx、.txt、.md 或 .csv 模板。');status('正在本机读取模板…');const r=await post('/api/ai/import',{file:{name:file.name,contentBase64:await readBase64(file)}});customTemplate={name:(r.title||file.name).slice(0,100),content:r.content};resetConsent();},'模板已读取，仅用于本次文档');return;
+    }
+    if(name==='sourceKeys'){
+      if(target.checked&&selected.size>=5){target.checked=false;toast('每次最多选择 5 份素材',true);return;}
+      if(target.checked)selected.add(target.value);else selected.delete(target.value);resetConsent();const count=document.querySelector('#tw-source-count');if(count)count.textContent=`已选 ${selected.size} / 5`;return;
+    }
+    if(name==='templateId'){if(target.value==='__custom')return;templateId=target.value;customTemplate=null;resetConsent();rerender();return;}
+    if(name==='generateConsent')consent=target.checked;
+    if(name==='finishConfirmed')confirmed=target.checked;
+    if(name==='documentId'){await run(()=>openDocument(target.value));}
   }
-  return {open,render,onAction,onSubmit,input,change,reload:async()=>{if(!workspace||busy)return;await reload();requestRender();},get busy(){return busy;},get taskId(){return id;},get hasUnsaved(){return draftsDirty();}};
+  return {open,render,onAction,onSubmit,input,change,reload:async()=>{if(!workspace||busy)return;await reload();rerender();},get busy(){return busy;},get taskId(){return id;},get hasUnsaved(){return [...editors.values()].some(dirty)||!!materialEditor?.dirty;}};
 }
