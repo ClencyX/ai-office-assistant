@@ -8,6 +8,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { OfficeStore } from './lib/office.mjs';
 import { InputError } from './lib/csv.mjs';
 import { ServerChanService } from './lib/serverchan.mjs';
+import { AiService } from './lib/ai.mjs';
+import { createDocx, extractTextFile } from './lib/ai-files.mjs';
 
 const projectDir = dirname(fileURLToPath(import.meta.url));
 const mimeTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
@@ -43,6 +45,7 @@ export function createApplication(options = {}) {
   const publicDir = resolve(options.publicDir ?? join(projectDir, 'public'));
   const store = new OfficeStore({ databasePath: join(dataDir, 'office.sqlite'), seedDemo: options.seedDemo ?? process.env.SEED_DEMO !== '0', scheduler, ...(options.now ? { now: options.now } : {}) });
   const serverchan = new ServerChanService({ store, dataDir, sendKey: options.serverChanSendKey ?? process.env.SERVERCHAN_SENDKEY ?? '', ...(options.serverChanFetch ? { fetchImpl: options.serverChanFetch } : {}), ...(options.serverChanTimeoutMs ? { timeoutMs: options.serverChanTimeoutMs } : {}) });
+  const ai = new AiService({ store, dataDir, ...(options.aiFetch ? { fetchImpl: options.aiFetch } : {}), ...(options.aiTimeoutMs ? { timeoutMs: options.aiTimeoutMs } : {}) });
   let timer; let closed = false;
   const runTasks = async actor => ({ ...store.run(actor), serverchan: await serverchan.runScheduled() });
   const localNames = new Set(['localhost', '127.0.0.1', '[::1]', ...(host === '0.0.0.0' || host === '::' ? [] : [host])]);
@@ -59,6 +62,21 @@ export function createApplication(options = {}) {
           if (pathname === '/api/health') return json(response, 200, { ok: true });
           if (pathname === '/api/state') return json(response, 200, { ...store.state(), serverchan: serverchan.snapshot() });
           if (pathname === '/api/serverchan') return json(response, 200, { serverchan: serverchan.snapshot() });
+          if (pathname === '/api/ai') return json(response, 200, ai.state());
+          const aiMaterial = pathname.match(/^\/api\/ai\/materials\/([^/]+)$/);
+          if (aiMaterial) return json(response, 200, { material: ai.getMaterial(decodeURIComponent(aiMaterial[1])) });
+          const aiDocument = pathname.match(/^\/api\/ai\/documents\/([^/]+)(\/export)?$/);
+          if (aiDocument) {
+            const id = decodeURIComponent(aiDocument[1]);
+            if (!aiDocument[2]) return json(response, 200, { document: ai.getDocument(id) });
+            const format = url.searchParams.get('format') || 'docx';
+            if (!['docx', 'md'].includes(format)) throw new InputError('成稿支持 Word 和 Markdown 格式。');
+            const document = ai.exportDocument(id);
+            const name = `${document.title.replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_').replace(/[. ]+$/g, '').slice(0, 100) || '已确认文档'}.${format}`;
+            const content = format === 'docx' ? createDocx(document.title, document.content) : Buffer.from(document.content, 'utf8');
+            response.writeHead(200, { 'Content-Type': format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'text/markdown; charset=utf-8', 'Content-Length': content.length, 'Content-Disposition': `attachment; filename="document.${format}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`, 'Cache-Control': 'no-store' });
+            return response.end(content);
+          }
           if (pathname === '/api/trash') return json(response, 200, store.trash());
           const attachmentMatch = pathname.match(/^\/api\/attachments\/([^/]+)$/);
           if (attachmentMatch) {
@@ -81,8 +99,27 @@ export function createApplication(options = {}) {
         }
         if (!['POST', 'PATCH', 'DELETE'].includes(method)) throw new InputError('不支持该请求方式。', 405);
         const completeMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/complete$/);
-        checkWrite(request, automationKey, isAutomation); const body = await readJson(request, method === 'POST' && completeMatch ? 36 * 1024 * 1024 : 2 * 1024 * 1024);
+        checkWrite(request, automationKey, isAutomation); const body = await readJson(request, method === 'POST' && completeMatch ? 36 * 1024 * 1024 : method === 'POST' && pathname === '/api/ai/transcribe' ? 29 * 1024 * 1024 : 2 * 1024 * 1024);
+        if (method === 'PATCH' && pathname === '/api/ai/settings') return json(response, 200, { settings: ai.updateSettings(body) });
+        if (method === 'POST' && pathname === '/api/ai/test') return json(response, 200, await ai.testConnection(body));
+        if (method === 'POST' && pathname === '/api/ai/import') return json(response, 200, extractTextFile(body.file));
+        if (method === 'POST' && pathname === '/api/ai/transcribe') return json(response, 200, await ai.transcribe(body));
+        if (method === 'POST' && pathname === '/api/ai/templates/analyze') return json(response, 200, { suggestion: await ai.analyzeTemplate(body) });
+        if (method === 'POST' && pathname === '/api/ai/templates') return json(response, 201, { template: ai.saveTemplate(body) });
+        const aiTemplateMatch = pathname.match(/^\/api\/ai\/templates\/([^/]+)$/);
+        if (method === 'PATCH' && aiTemplateMatch) return json(response, 200, { template: ai.saveTemplate(body, decodeURIComponent(aiTemplateMatch[1])) });
+        if (method === 'POST' && pathname === '/api/ai/materials') return json(response, 201, { material: ai.saveMaterial(body) });
+        const aiMaterialMatch = pathname.match(/^\/api\/ai\/materials\/([^/]+)$/);
+        if (method === 'PATCH' && aiMaterialMatch) return json(response, 200, { material: ai.saveMaterial(body, decodeURIComponent(aiMaterialMatch[1])) });
+        if (method === 'DELETE' && aiMaterialMatch) return json(response, 200, ai.deleteMaterial(decodeURIComponent(aiMaterialMatch[1])));
+        if (method === 'POST' && pathname === '/api/ai/documents') return json(response, 201, { document: await ai.generate(body) });
+        const aiDocumentMatch = pathname.match(/^\/api\/ai\/documents\/([^/]+)(\/review)?$/);
+        if (aiDocumentMatch && !aiDocumentMatch[2] && method === 'PATCH') return json(response, 200, { document: ai.updateDocument(decodeURIComponent(aiDocumentMatch[1]), body) });
+        if (aiDocumentMatch?.[2] && method === 'POST') return json(response, 200, { document: ai.reviewDocument(decodeURIComponent(aiDocumentMatch[1]), body) });
         if (method === 'POST' && completeMatch) return json(response, 200, { task: store.completeTask(decodeURIComponent(completeMatch[1]), body) });
+        const attachmentMutationMatch = pathname.match(/^\/api\/attachments\/([^/]+)(\/restore)?$/);
+        if (method === 'DELETE' && attachmentMutationMatch && !attachmentMutationMatch[2]) return json(response, 200, store.deleteAttachment(decodeURIComponent(attachmentMutationMatch[1])));
+        if (method === 'POST' && attachmentMutationMatch?.[2]) return json(response, 200, store.restoreAttachment(decodeURIComponent(attachmentMutationMatch[1])));
         if (method === 'PATCH' && pathname === '/api/serverchan/settings') return json(response, 200, { serverchan: serverchan.updateSettings(body) });
         if (method === 'POST' && pathname === '/api/serverchan/test') return json(response, 200, { result: await serverchan.sendTest(), serverchan: serverchan.snapshot() });
         if (method === 'POST' && pathname === '/api/serverchan/send') {
@@ -127,7 +164,7 @@ export function createApplication(options = {}) {
   });
   server.requestTimeout = 30_000; server.headersTimeout = 15_000;
   return {
-    server, store, serverchan, host, port, dataDir,
+    server, store, serverchan, ai, host, port, dataDir,
     async start() {
       store.run();
       await new Promise((resolveStart, rejectStart) => { server.once('error', rejectStart); server.listen(port, host, () => { server.removeListener('error', rejectStart); resolveStart(); }); });
@@ -138,7 +175,7 @@ export function createApplication(options = {}) {
     async close() {
       if (closed) return; closed = true; clearInterval(timer);
       const closingServer = server.listening ? new Promise((resolveClose, rejectClose) => server.close(error => error ? rejectClose(error) : resolveClose())) : Promise.resolve();
-      await serverchan.close();
+      await Promise.all([serverchan.close(), ai.close()]);
       await closingServer;
       store.close();
     }

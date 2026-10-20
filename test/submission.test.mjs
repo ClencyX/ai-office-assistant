@@ -12,7 +12,7 @@ const taskInput=(extra={})=>({title:'提交材料验收',owner:'经办人',start
 const file=(name,content)=>({name,contentBase64:Buffer.from(content).toString('base64')});
 const textFile=()=>file('成果.txt','已完成本次任务，材料核对无误。');
 const payload=(files=[textFile()])=>({confirmed:true,note:'内容已核对',files});
-async function fixture(t){const dir=await mkdtemp(join(tmpdir(),'office-submission-'));const store=new OfficeStore({databasePath:join(dir,'office.sqlite'),seedDemo:false,now:clock});t.after(async()=>{try{store.close();}catch{}await rm(dir,{recursive:true,force:true});});return {dir,store};}
+async function fixture(t,now=clock){const dir=await mkdtemp(join(tmpdir(),'office-submission-'));const store=new OfficeStore({databasePath:join(dir,'office.sqlite'),seedDemo:false,now});t.after(async()=>{try{store.close();}catch{}await rm(dir,{recursive:true,force:true});});return {dir,store};}
 function crc32(data){let crc=0xffffffff;for(const byte of data){crc^=byte;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0;}
 // Generate tiny, real ZIP containers for Office-format interoperability tests.
 function zip(entries){const local=[],central=[];let offset=0;for(const [path,text]of Object.entries(entries)){const name=Buffer.from(path),body=Buffer.from(text),crc=crc32(body),header=Buffer.alloc(30),directory=Buffer.alloc(46);header.writeUInt32LE(0x04034b50);header.writeUInt16LE(20,4);header.writeUInt32LE(crc,14);header.writeUInt32LE(body.length,18);header.writeUInt32LE(body.length,22);header.writeUInt16LE(name.length,26);directory.writeUInt32LE(0x02014b50);directory.writeUInt16LE(20,4);directory.writeUInt16LE(20,6);directory.writeUInt32LE(crc,16);directory.writeUInt32LE(body.length,20);directory.writeUInt32LE(body.length,24);directory.writeUInt16LE(name.length,28);directory.writeUInt32LE(offset,42);local.push(header,name,body);central.push(directory,name);offset+=header.length+name.length+body.length;}const end=Buffer.alloc(22),centralBuffer=Buffer.concat(central);end.writeUInt32LE(0x06054b50);end.writeUInt16LE(Object.keys(entries).length,8);end.writeUInt16LE(Object.keys(entries).length,10);end.writeUInt32LE(centralBuffer.length,12);end.writeUInt32LE(offset,16);return Buffer.concat([...local,centralBuffer,end]);}
@@ -81,6 +81,94 @@ test('一致性备份包含文件原内容，回收站保留文件且恢复后�
   const {dir,store}=await fixture(t);const task=store.createTask(taskInput());const result=store.completeTask(task.id,payload());const id=result.attachments[0].id,original=Buffer.from(store.getAttachment(id).content);
   store.deleteTask(task.id);assert.throws(()=>store.getAttachment(id),/未找到/);assert.equal(store.trash().tasks[0].attachments.length,1);store.restoreTask(task.id);assert.deepEqual(Buffer.from(store.getAttachment(id).content),original);
   const backup=join(dir,'backup.sqlite');store.createBackup(backup);const restored=new OfficeStore({databasePath:backup,seedDemo:false,now:clock});try{assert.deepEqual(Buffer.from(restored.getAttachment(id).content),original);assert.equal(restored.getTask(task.id).status,'已完成');assert.equal(restored.db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');}finally{restored.close();}
+});
+test('删除同批部分材料保留完成，最后一份删除才重开任务，历史材料不能代替本次提交',async t=>{
+  const {store}=await fixture(t);const task=store.createTask(taskInput());
+  const history=store.completeTask(task.id,payload([file('上次成果.txt','上一轮工作成果')])).attachments[0];
+  store.updateTask(task.id,{status:'进行中'});
+  const completed=store.completeTask(task.id,payload([file('本次正文.txt','本次工作正文'),file('本次附件.txt','本次补充附件')]));
+  const latest=completed.attachments.filter(item=>item.id!==history.id),completedAt=completed.completedAt;
+  let result=store.deleteAttachment(history.id);
+  assert.equal(result.reopened,false);assert.equal(result.task.status,'已完成');assert.equal(result.task.completedAt,completedAt);
+  store.restoreAttachment(history.id);
+  result=store.deleteAttachment(latest[0].id);
+  assert.equal(result.reopened,false);assert.equal(result.task.status,'已完成');assert.equal(result.task.completedAt,completedAt);
+  assert.equal(result.task.attachments.length,2);assert.equal(result.task.deletedAttachments.length,1);
+  assert.throws(()=>store.getAttachment(latest[0].id),error=>error.status===404);
+  result=store.deleteAttachment(latest[1].id);
+  assert.equal(result.deleted,true);assert.equal(result.attachmentId,latest[1].id);assert.equal(result.reopened,true);
+  assert.equal(result.task.status,'进行中');assert.equal(result.task.completedAt,null);assert.equal(result.task.attachments[0].id,history.id);
+  assert.equal(result.task.deletedAttachments.length,2);assert.equal(result.task.completionLegacy,false);
+  for(const metadata of [...result.task.attachments,...result.task.deletedAttachments]){
+    for(const privateField of ['content','contentBase64','batchId'])assert.equal(Object.hasOwn(metadata,privateField),false);
+  }
+  assert.ok(result.task.deletedAttachments.every(item=>item.deletedAt===clock().toISOString()));
+  assert.equal(store.state().events.filter(event=>event.action==='删除材料').length,3);
+  assert.ok(store.state().events.some(event=>event.action==='重新打开'&&event.detail.includes('全部删除')));
+});
+test('删除完成材料按当前日期恢复提醒，恢复材料不绕过重新提交要求',async t=>{
+  let instant=clock();const {store}=await fixture(t,()=>instant);const task=store.createTask(taskInput());store.run();
+  const completed=store.completeTask(task.id,payload()),attachmentId=completed.attachments[0].id;
+  assert.equal(store.state().reminders[0].read,true);
+  store.deleteAttachment(attachmentId);
+  assert.equal(store.state().reminders.find(item=>item.day==='2026-10-19').read,false);
+  const restored=store.restoreAttachment(attachmentId);
+  assert.equal(restored.restored,true);assert.equal(restored.task.status,'进行中');assert.equal(restored.task.completedAt,null);
+  assert.throws(()=>store.updateTask(task.id,{status:'已完成'}),/上传/);
+  assert.throws(()=>store.completeTask(task.id,payload([])),/1 至 5/);
+  const current=store.completeTask(task.id,payload([file('重新核对成果.txt','重新核对后提交的成果')]));
+  instant=new Date('2026-10-21T03:00:00Z');
+  const result=store.deleteAttachment(current.attachments.find(item=>item.id!==attachmentId).id);
+  assert.equal(result.reopened,true);assert.equal(result.task.isOverdue,true);
+  const reminder=store.state().reminders.find(item=>item.day==='2026-10-21');
+  assert.ok(reminder);assert.equal(reminder.kind,'逾期');assert.equal(reminder.read,false);
+  assert.ok(store.state().events.some(event=>event.action==='恢复材料'));
+});
+test('删除恢复材料校验重复、缺失和回收站边界，任务恢复不改变材料删除状态',async t=>{
+  const {store}=await fixture(t);const task=store.createTask(taskInput());const completed=store.completeTask(task.id,payload([file('保留.txt','应保留的成果'),file('删除.txt','待删除的成果')]));
+  const [removed,active]=completed.attachments.map(item=>item.id);store.deleteAttachment(removed);
+  assert.throws(()=>store.deleteAttachment(removed),error=>error.status===409);
+  assert.throws(()=>store.restoreAttachment(active),error=>error.status===409);
+  assert.throws(()=>store.deleteAttachment('missing'),error=>error.status===404);
+  assert.throws(()=>store.restoreAttachment('missing'),error=>error.status===404);
+  const eventsBefore=store.state().events.length;store.deleteTask(task.id);
+  assert.throws(()=>store.deleteAttachment(active),error=>error.status===404);
+  assert.throws(()=>store.restoreAttachment(removed),error=>error.status===404);
+  assert.throws(()=>store.getAttachment(active),error=>error.status===404);
+  assert.equal(store.state().events.length,eventsBefore+1);
+  const trashed=store.trash().tasks[0];assert.equal(trashed.attachments[0].id,active);assert.equal(trashed.deletedAttachments[0].id,removed);
+  const restored=store.restoreTask(task.id);assert.equal(restored.status,'已完成');assert.equal(restored.deletedAttachments[0].id,removed);
+  assert.throws(()=>store.getAttachment(removed),error=>error.status===404);
+  assert.equal(store.getAttachment(active).id,active);assert.equal(store.restoreAttachment(removed).task.attachments.length,2);
+});
+test('旧附件数据库原位迁移，删除状态与内容重启后保留并可恢复',async t=>{
+  const {dir,store}=await fixture(t);const task=store.createTask(taskInput());const completed=store.completeTask(task.id,payload());const attachmentId=completed.attachments[0].id;
+  const original=Buffer.from(store.getAttachment(attachmentId).content);
+  store.db.exec('ALTER TABLE attachments DROP COLUMN deletedAt');store.close();
+  let reopened=new OfficeStore({databasePath:join(dir,'office.sqlite'),seedDemo:false,now:clock});
+  try{
+    assert.ok(reopened.db.prepare('PRAGMA table_info(attachments)').all().some(column=>column.name==='deletedAt'));
+    assert.deepEqual(Buffer.from(reopened.getAttachment(attachmentId).content),original);assert.equal(reopened.getTask(task.id).number,task.number);
+    reopened.deleteAttachment(attachmentId);
+  }finally{reopened.close();}
+  reopened=new OfficeStore({databasePath:join(dir,'office.sqlite'),seedDemo:false,now:clock});
+  try{
+    const persisted=reopened.getTask(task.id);assert.equal(persisted.status,'进行中');assert.equal(persisted.attachments.length,0);assert.equal(persisted.deletedAttachments[0].id,attachmentId);
+    assert.throws(()=>reopened.getAttachment(attachmentId),error=>error.status===404);
+    assert.equal(reopened.restoreAttachment(attachmentId).task.status,'进行中');assert.deepEqual(Buffer.from(reopened.getAttachment(attachmentId).content),original);
+  }finally{reopened.close();}
+});
+test('备份保留软删除材料的原内容和删除时间，恢复材料保持未完成状态',async t=>{
+  const {dir,store}=await fixture(t);const task=store.createTask(taskInput());const completed=store.completeTask(task.id,payload());const attachmentId=completed.attachments[0].id;
+  const original=Buffer.from(store.getAttachment(attachmentId).content);store.deleteAttachment(attachmentId);
+  const backup=join(dir,'deleted-material-backup.sqlite');store.createBackup(backup);
+  const restored=new OfficeStore({databasePath:backup,seedDemo:false,now:clock});
+  try{
+    const backedUp=restored.getTask(task.id);assert.equal(backedUp.attachments.length,0);assert.equal(backedUp.deletedAttachments[0].deletedAt,clock().toISOString());
+    assert.throws(()=>restored.getAttachment(attachmentId),error=>error.status===404);
+    assert.equal(restored.restoreAttachment(attachmentId).task.status,'进行中');assert.deepEqual(Buffer.from(restored.getAttachment(attachmentId).content),original);
+    assert.equal(restored.db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
+  }finally{restored.close();}
 });
 test('HTTP完成强制同源与材料、下载按附件输出，状态不返回文档内容',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'office-upload-http-'));const app=createApplication({port:0,dataDir:dir,seedDemo:false,scheduler:'external',now:clock});const address=await app.start(),base=`http://127.0.0.1:${address.port}`;t.after(async()=>{await app.close();await rm(dir,{recursive:true,force:true});});

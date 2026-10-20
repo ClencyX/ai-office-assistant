@@ -4,6 +4,8 @@
 !.env.example
 serverchan.json
 serverchan.json.*
+ai-settings.json
+ai-settings.json.*
 data/
 .qa-data/
 backups/
