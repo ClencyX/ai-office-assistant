@@ -1,3 +1,4 @@
+import {modelService,runAiJob} from './ai-service-info.js';
 // 在同一页整理资料、生成正文并提交完成任务。
 export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,toast,rerender,onTaskChange,openTaskForm,openRecords,openCompletion,navigate}) {
   const url=encodeURIComponent;
@@ -7,7 +8,7 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
   const size=v=>v>=1048576?`${(v/1048576).toFixed(1)} 兆`:`${Math.max(1,Math.ceil(v/1024))} 千字节`;
   let id='',workspace=null,loading=false,error='',busy=false,progress='',loadToken=0,materialEditor=null;
   let selected=new Set(),selectedDocument='',draftTitle='',templateId='',customTemplate=null,consent=false,confirmed=false;
-  let sourceMenuKey='',removeKey='',regeneratePrompt=false,reloadPrompt=false,conflict=false;
+  let partialTranscription='',sourceMenuKey='',removeKey='',regeneratePrompt=false,reloadPrompt=false,conflict=false;
   const editors=new Map();
   const current=()=>editors.get(selectedDocument);
   const dirty=d=>!!d&&(d.title!==d.savedTitle||d.content!==d.savedContent);
@@ -29,7 +30,7 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
   async function run(work,success=''){
     if(busy)return;busy=true;error='';progress='正在处理，请稍候…';renderBusy();
     try{await work();if(success)toast(success);}
-    catch(e){error=e.message;if(e.status===409&&current())conflict=true;toast(e.message,true);}
+    catch(e){error=e.message;if(e.partialText)partialTranscription=e.partialText;if(e.status===409&&current())conflict=true;toast(e.message,true);}
     finally{busy=false;progress='';rerender();}
   }
   async function reload(){
@@ -50,7 +51,7 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
     if(id===taskId&&loading)return;
     if(id===taskId&&workspace){await run(reload);return;}
     id=taskId;workspace=null;loading=true;error='';materialEditor=null;selected=new Set();selectedDocument='';editors.clear();
-    draftTitle='';templateId='';customTemplate=null;consent=false;confirmed=false;sourceMenuKey='';removeKey='';regeneratePrompt=false;reloadPrompt=false;conflict=false;
+    partialTranscription='';draftTitle='';templateId='';customTemplate=null;consent=false;confirmed=false;sourceMenuKey='';removeKey='';regeneratePrompt=false;reloadPrompt=false;conflict=false;
     const token=++loadToken;rerender();
     try{
       const result=await api(`/api/tasks/${url(taskId)}/workspace`);if(token!==loadToken)return;
@@ -75,14 +76,15 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
     const list=items();
     return `<div class="tw-input-section"><div class="tw-section-heading"><h2>素材</h2><span id="tw-source-count">已选 ${selected.size} / 5</span></div><label class="button tw-upload" for="tw-source-file">${icon('upload')} 上传素材</label><input class="tw-file-input" id="tw-source-file" type="file" multiple accept=".docx,.txt,.md,.csv,.mp3,.wav,.m4a,.webm,.mp4,.ogg,.flac,.png,.jpg,.jpeg,.webp"><p class="hint">会议记录、录音或图片，可多选。</p>${list.length?`<div class="tw-sources">${list.map(sourceRow).join('')}</div>`:'<p class="tw-source-empty">上传本次资料，或粘贴会议记录。</p>'}<details class="tw-paste" ${materialEditor?'open':''}><summary>粘贴／修改文字资料</summary>${materialEditor?materialForm():button('material-new','粘贴会议记录','button small')}</details></div>`;
   }
-  function materialForm(){const m=materialEditor;return `<form id="tw-material-form" class="tw-material-form">${field('资料名称','materialTitle',m.title,'required maxlength="200"')}${area('资料正文','materialContent',m.content,'required maxlength="20000" rows="8"')}<div class="button-row"><button type="submit" class="button small">保存资料</button>${button('material-close','关闭','link-button')}</div>${m.discardPrompt?`<p class="hint">修改尚未保存。${button('material-discard','放弃修改','link-button danger')}</p>`:''}<span id="tw-material-status" class="hint">${m.dirty?'尚未保存，生成时会先保存。':''}</span></form>`;}
+  function materialForm(){const m=materialEditor;return `<form id="tw-material-form" class="tw-material-form">${field('资料名称','materialTitle',m.title,'required maxlength="200"')}${area('资料正文','materialContent',m.content,'required maxlength="60000" rows="8"')}<div class="button-row"><button type="submit" class="button small">保存资料</button>${button('material-close','关闭','link-button')}</div>${m.discardPrompt?`<p class="hint">修改尚未保存。${button('material-discard','放弃修改','link-button danger')}</p>`:''}<span id="tw-material-status" class="hint">${m.dirty?'尚未保存，生成时会先保存。':''}</span></form>`;}
   function templatePanel(){
     const t=template();
     return `<div class="tw-input-section"><div class="tw-section-heading"><h2>模板</h2><label class="link-button" for="tw-template-file">上传模板</label><input class="tw-file-input" id="tw-template-file" type="file" accept=".docx,.txt,.md,.csv"></div><label class="visually-hidden" for="tw-template-choice">选择模板</label><select id="tw-template-choice" name="templateId">${customTemplate?option('__custom','__custom',`本次：${customTemplate.name}`):''}${workspace.templates.map(t=>option(t.id,customTemplate?'__custom':templateId,t.name)).join('')}</select>${customTemplate?`<div class="tw-custom-label"><span>仅用于本次文档</span>${button('template-clear','清除上传模板','link-button')}</div>`:''}${t?`<details class="tw-template-details"><summary>查看／调整模板内容</summary><div class="tw-template-fields">${field('模板名称','templateName',t.name,'maxlength="100"')}${area('模板正文与写作要求','templateContent',t.content,'maxlength="20000" rows="9"')}</div></details>`:''}</div>`;
   }
   function generatePanel(){
-    const s=workspace.settings||{};let host='尚未配置';try{host=new URL(s.baseUrl).host;}catch{}
-    return `<div class="tw-input-section tw-generation"><div class="tw-model"><span>${esc(host)}</span><strong>${esc(s.model||'尚未配置模型')}</strong></div><details class="tw-service-details"><summary>发送范围与文件支持</summary><p>生成时会发送任务要求、所选素材及模板；未识别的录音、图片会先发送原件识别。原件保存在本机，模板只参考结构，不沿用历史事实。</p><p>录音模型：${esc(s.transcriptionModel||'未配置')}<br>图片模型：${esc(s.visionModel||s.model||'未配置')}</p><p>文档／模板：.docx、.txt、.md、.csv，最大 1 兆。录音最大 20 兆，图片最大 10 兆；每次最多选 5 份素材。</p></details>${!ready()?'<p class="hint">请先到「AI 文档 → 模型设置」配置并启用模型。</p>':''}<label class="ai-check tw-consent"><input type="checkbox" name="generateConsent" ${consent?'checked':''}><span>我同意将任务要求、所选素材（含待识别原件）和模板发送至上述模型服务</span></label>${regeneratePrompt?`<div class="tw-inline-confirm"><p>当前正文有未保存修改。继续生成会打开一份新草稿，当前修改仍会保留在原草稿中；离开页面前请保存。</p><div class="button-row">${button('generate-cancel','取消','button small')}${button('generate-confirm','继续生成','button small primary')}</div></div>`:''}${button('generate',`${icon('edit')} ${current()?'重新生成':'AI 生成'}`,'button primary tw-generate',!ready()?'disabled':'')}</div>`;
+    const s=workspace.settings||{},services=[['文档','text'],['录音','transcription'],['图片','vision']].map(([label,target])=>({label,...modelService(s,target)}));
+    const summary=services.map(service=>{let host=service.baseUrl||'未配置';try{host=new URL(host).host;}catch{}return `<div class="tw-model"><span>${service.label}：${esc(host)}</span><strong>${esc(service.model||'未配置模型')}</strong></div>`;}).join('');
+    return `<div class="tw-input-section tw-generation">${summary}<details class="tw-service-details"><summary>发送范围与文件支持</summary><p>文档模型接收任务要求、所选文字素材及模板；待识别录音、图片发往各自的服务。未勾选的原件不发送，模板只参考结构。</p>${services.map(service=>`<p>${service.label}地址：${esc(service.baseUrl||'未配置')}</p>`).join('')}<p>文档／模板最大 1 兆。录音原件最大 100 兆；千问支持最长 4 小时并在本机按 3 分钟分段，其他转写接口最大 20 兆。图片最大 10 兆，千问图片建议原图不超过 7 兆。每次最多选 5 份素材。</p></details>${!ready()?'<p class="hint">请先到「AI 文档 → 模型设置」配置并启用模型。</p>':''}<label class="ai-check tw-consent"><input type="checkbox" name="generateConsent" ${consent?'checked':''}><span>我同意按上述服务配置发送任务要求、所选素材（含待识别录音、图片）和模板</span></label>${partialTranscription?`<details class="tw-history" open><summary>已转写部分（完整转写尚未成功）</summary><p class="hint">可复制下面的文字另存为资料，原录音仍保留。再次转写会重新发送录音。</p><textarea rows="8" readonly aria-label="已完成的部分转写文字">${esc(partialTranscription)}</textarea></details>`:''}${regeneratePrompt?`<div class="tw-inline-confirm"><p>当前正文有未保存修改。继续生成会打开一份新草稿，当前修改仍会保留在原草稿中；离开页面前请保存。</p><div class="button-row">${button('generate-cancel','取消','button small')}${button('generate-confirm','继续生成','button small primary')}</div></div>`:''}${button('generate',`${icon('edit')} ${current()?'重新生成':'AI 生成'}`,'button primary tw-generate',!ready()?'disabled':'')}</div>`;
   }
   function documentPanel(){
     const d=current(),canFinish=d&&['文本','不限'].includes(workspace.task.submissionType||'文本');
@@ -112,8 +114,8 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
     for(const item of chosen){
       if(item.materialId){materialIds.push(item.materialId);continue;}
       status(`正在识别：${item.name}`);
-      try{const r=await post(`/api/tasks/${url(id)}/sources/${url(item.source.id)}/extract`,{consent:true});materialIds.push(r.material.id);}
-      catch(e){await reload();throw new Error(`“${item.name}”识别失败：${e.message} 原件已保留，可取消勾选后重试。`);}
+      try{const r=await runAiJob(api,`/api/tasks/${url(id)}/sources/${url(item.source.id)}/extract-jobs`,{consent:true},message=>status(`${item.name}：${message}`));materialIds.push(r.material.id);partialTranscription='';}
+      catch(e){await reload();const failure=new Error(`“${item.name}”识别失败：${e.message} 原件已保留，可取消勾选后重试。`);failure.partialText=e.partialText;throw failure;}
     }
     status('正在生成正文…');
     const body={title,materialIds,referenceIds:[],consent:true,...(customTemplate?{template:{name:customTemplate.name,content:customTemplate.content}}:{templateId})};
@@ -173,7 +175,7 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
           try{
             const ext=file.name.split('.').at(-1).toLowerCase(),audio=['mp3','wav','m4a','webm','mp4','ogg','flac'],images=['png','jpg','jpeg','webp'];
             if(![...audio,...images,'docx','txt','md','csv'].includes(ext))throw new Error('不支持此文件格式');
-            const max=(audio.includes(ext)?20:images.includes(ext)?10:1)*1048576;if(!file.size||file.size>max)throw new Error(`文件须非空且不超过 ${max/1048576} 兆`);
+            const max=(audio.includes(ext)?100:images.includes(ext)?10:1)*1048576;if(!file.size||file.size>max)throw new Error(`文件须非空且不超过 ${max/1048576} 兆`);
             status(`正在保存：${file.name}`);const r=await post(`/api/tasks/${url(id)}/sources`,{file:{name:file.name,contentBase64:await readBase64(file)}});await reload();count++;if(selected.size<5)selected.add(`s:${r.source.id}`);else unselected++;
           }catch(e){failures.push(`${file.name}：${e.message}`);}
         }

@@ -169,7 +169,22 @@
 .ai-connection-status.failed { border-color: #ecd9d2; background: #fcf8f6; }
 .ai-connection-status.failed strong, .ai-connection-status.failed p { color: #b17765; }
 .ai-settings-test > .ai-check { margin: 11px 0 7px; }
+.ai-config-tabs { display: flex; gap: 5px; padding: 4px; margin: 0 0 22px; background: #f2f5f9; border: 1px solid #e8edf3; border-radius: 7px; }
+.ai-config-enabled { padding: 12px 14px; margin: 0 0 17px; border: 1px solid #e4eaf2; border-radius: 6px; background: #fbfcfe; }
+.ai-config-enabled .ai-settings-small { margin: 5px 0 0 25px; }
+.ai-config-tabs > button { flex: 1; min-width: 0; border: 0; border-radius: 4px; padding: 11px 8px; background: transparent; color: #76869a; font: inherit; font-size: 13px; cursor: pointer; }
+.ai-config-tabs > button[aria-selected=true] { color: #3566a3; background: #fff; box-shadow: 0 1px 4px #334c6e12; }
+.ai-config-tabs > button:focus-visible { outline: 2px solid #8ca9d1; outline-offset: 2px; }
+.ai-config-panel { padding: 0 0 22px; margin-bottom: 22px; border-bottom: 1px solid var(--line); }
+.ai-config-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.ai-config-title h3 { margin: 0 0 4px; color: #4b6381; font-size: 15px; font-weight: 500; }
+.ai-config-title .button { flex-shrink: 0; font-size: 12px; padding-left: 10px; padding-right: 10px; }
+.ai-config-panel .ai-provider-help { margin-bottom: 0; }
+.ai-config-panel .ai-form-stack { gap: 17px; }
+.ai-config-panel input, .ai-config-panel select { width: 100%; }
+.ai-config-panel .ai-clear-key input { width: 15px; }
 @media (max-width: 560px) {
+  .ai-config-title { flex-wrap: wrap; }
   .ai-provider-options { grid-template-columns: 1fr; gap: 8px; }
   .ai-provider { padding: 10px 12px; }
   .ai-provider small { margin-top: 0; }

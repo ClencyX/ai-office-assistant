@@ -27,7 +27,12 @@ async function fixture(t, options = {}) {
 
 test('AI 默认关闭，配置独立原子保存、密钥不返回且不进入 SQLite 备份', async t => {
   const { dir, store, client, service, requests } = await fixture(t);
-  assert.deepEqual(client.state().settings, { enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', transcriptionModel: '', visionModel: '', keyConfigured: false, configError: null });
+  assert.deepEqual(client.state().settings, {
+    enabled: false, baseUrl: 'http://localhost:11434/v1', model: '', transcriptionModel: '', visionModel: '',
+    transcriptionProvider: 'shared', transcriptionBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    visionProvider: 'shared', visionBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    keyConfigured: false, transcriptionKeyConfigured: false, visionKeyConfigured: false, configError: null
+  });
   assert.equal(client.state().templates.length, 3);
   assert.deepEqual(client.state().metrics, { reviewedCount: 0, usableCount: 0, usableRate: null });
   await assert.rejects(client.generate({ consent: true }), /尚未启用/);
@@ -111,7 +116,10 @@ test('模板不再限定类型，新模板只需名称正文，旧模板兼容�
 test('素材按类型校验，关联任务校验，列表不泄露正文，软删除保留 SQLite 内容', async t => {
   const { store, client, material } = await fixture(t);
   assert.throws(() => material({ kind: '无效类型' }), /材料类型/);
-  assert.throws(() => material({ content: '字'.repeat(20001) }), /20000/);
+  assert.throws(() => material({ content: '字'.repeat(60001) }), /60000/);
+  assert.throws(() => material({ kind: '历史样例', content: '字'.repeat(20001) }), /20000/);
+  const longMaterial = material({ content: '字'.repeat(60000) });
+  assert.equal(longMaterial.content.length, 60000); client.deleteMaterial(longMaterial.id);
   assert.throws(() => material({ taskId: 'missing' }), /关联任务/);
   const task = store.createTask(taskInput); const saved = material({ taskId: task.id });
   assert.equal(client.state().materials[0].taskId, task.id);
