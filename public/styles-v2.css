@@ -36,18 +36,19 @@
 .tw-input-section > .hint { font-size: 11px; margin: 8px 0; }
 .tw-source-empty { font-size: 12px; color: #9aa5b0; padding: 10px 0; line-height: 1.8; }
 .tw-sources { margin: 12px 0; }
-.tw-source-row { position: relative; display: flex; align-items: flex-start; gap: 9px; padding: 10px 0; border-bottom: 1px solid #eff1f4; }
+.tw-source-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: start; gap: 8px 9px; padding: 10px 0; border-bottom: 1px solid #eff1f4; }
 .tw-source-row:last-child { border-bottom: 0; }
 .tw-source-select { display: flex; align-items: flex-start; gap: 9px; flex: 1; min-width: 0; cursor: pointer; }
 .tw-source-select input { width: 14px; height: 14px; margin: 3px 0 0; accent-color: #557fae; flex-shrink: 0; }
-.tw-source-select > span { min-width: 0; }
+.tw-source-select > span { flex: 1; min-width: 0; }
 .tw-source-select strong { display: block; color: #566b80; font-size: 12px; font-weight: 400; overflow-wrap: anywhere; line-height: 1.7; }
 .tw-source-select small { display: block; color: #9aa3ad; font-size: 10px; line-height: 1.8; }
-.tw-source-more { flex-shrink: 0; color: #8392a3; }
-.tw-source-more > summary { font-size: 11px; list-style: none; }
-.tw-source-options { display: flex; flex-direction: column; align-items: flex-start; gap: 11px; padding: 13px; border: 1px solid #e1e7ef; background: #fff; box-shadow: 0 4px 18px #24395412; border-radius: 4px; position: absolute; top: 35px; right: 0; min-width: 140px; z-index: 3; }
+.tw-source-more { align-self: start; margin-top: 2px; color: #8392a3; font-size: 11px; white-space: nowrap; }
+.tw-source-options { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; padding: 3px 0 3px 23px; min-width: 0; }
+.tw-source-options[hidden] { display: none; }
 .tw-source-options > a,.tw-source-options > button { font-size: 12px; }
-.tw-source-more .tw-inline-confirm { position: relative; z-index: 4; max-width: 250px; margin-top: 12px; }
+.tw-source-confirm { grid-column: 1 / -1; min-width: 0; margin: 3px 0 0; }
+.tw-source-confirm .button-row { flex-wrap: wrap; }
 .tw-paste,.tw-template-details { margin-top: 12px; color: #7c8da1; }
 .tw-paste > .button { margin-top: 12px; }
 .tw-material-form,.tw-template-fields { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; }

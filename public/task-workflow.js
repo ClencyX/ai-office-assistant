@@ -7,7 +7,7 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
   const size=v=>v>=1048576?`${(v/1048576).toFixed(1)} 兆`:`${Math.max(1,Math.ceil(v/1024))} 千字节`;
   let id='',workspace=null,loading=false,error='',busy=false,progress='',loadToken=0,materialEditor=null;
   let selected=new Set(),selectedDocument='',draftTitle='',templateId='',customTemplate=null,consent=false,confirmed=false;
-  let removeKey='',regeneratePrompt=false,reloadPrompt=false,conflict=false;
+  let sourceMenuKey='',removeKey='',regeneratePrompt=false,reloadPrompt=false,conflict=false;
   const editors=new Map();
   const current=()=>editors.get(selectedDocument);
   const dirty=d=>!!d&&(d.title!==d.savedTitle||d.content!==d.savedContent);
@@ -50,7 +50,7 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
     if(id===taskId&&loading)return;
     if(id===taskId&&workspace){await run(reload);return;}
     id=taskId;workspace=null;loading=true;error='';materialEditor=null;selected=new Set();selectedDocument='';editors.clear();
-    draftTitle='';templateId='';customTemplate=null;consent=false;confirmed=false;removeKey='';regeneratePrompt=false;reloadPrompt=false;conflict=false;
+    draftTitle='';templateId='';customTemplate=null;consent=false;confirmed=false;sourceMenuKey='';removeKey='';regeneratePrompt=false;reloadPrompt=false;conflict=false;
     const token=++loadToken;rerender();
     try{
       const result=await api(`/api/tasks/${url(taskId)}/workspace`);if(token!==loadToken)return;
@@ -67,8 +67,9 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
     return `<div class="task-workspace">${button('back',`${icon('chevron')} 返回任务台账`,'link-button tw-back')}<header class="tw-header"><div><div class="tw-eyebrow">整理并完成 ${badge(t)}</div><h1>${esc(t.title)}</h1><div class="tw-meta"><span>负责人：${esc(t.owner)}</span><span>截止：${esc(t.dueDate)}</span><span>提交形式：${esc(t.submissionType||'文本')}</span></div></div><div class="button-row">${button('records','任务详情','button small')}${button('edit-task','编辑任务','button small')}</div></header><div class="tw-requirement"><strong>交付要求</strong><p>${esc(t.deliverable)}</p>${t.description?`<details><summary>补充说明</summary><p>${esc(t.description)}</p></details>`:''}</div>${busy?`<p class="tw-progress" role="status">${esc(progress)}</p>`:''}${error?`<div class="error-banner" role="alert">${esc(error)}</div>`:''}${t.status==='已完成'?completed():`<div class="tw-layout"><aside class="tw-inputs panel">${sources()}${templatePanel()}${generatePanel()}</aside><section class="tw-writing panel">${documentPanel()}</section></div>`}</div>`;
   }
   function sourceRow(item){
-    const f=item.source,isOpen=removeKey===item.key;
-    return `<div class="tw-source-row"><label class="tw-source-select"><input type="checkbox" name="sourceKeys" value="${esc(item.key)}" ${selected.has(item.key)?'checked':''}><span><strong>${esc(item.name)}</strong><small>${esc(item.kind)}${f?` · ${size(f.size)}`:''}${!item.materialId?' · 生成时识别':''}</small></span></label><details class="tw-source-more" ${isOpen?'open':''}><summary aria-label="${esc(item.name)}的操作">更多</summary><div class="tw-source-options">${f?`<a href="/api/tasks/${url(id)}/sources/${url(f.id)}/download" download>下载原件</a>`:''}${item.materialId?button('material-open','查看／修改文字','link-button',`data-id="${esc(item.materialId)}"`):'<span class="hint">生成时自动识别正文</span>'}${button('remove','删除','link-button danger',`data-key="${esc(item.key)}"`)}</div>${isOpen?`<div class="tw-inline-confirm"><p>确认删除此资料？已生成文档的来源记录会保留。</p><div class="button-row">${button('remove-cancel','取消','button small')}${button('remove-confirm','确认删除','button small danger',`data-key="${esc(item.key)}"`)}</div></div>`:''}</details></div>`;
+    const f=item.source,isOpen=removeKey===item.key,menuOpen=sourceMenuKey===item.key&&!isOpen;
+    const menuId=`tw-source-menu-${url(item.key)}`;
+    return `<div class="tw-source-row"><label class="tw-source-select"><input type="checkbox" name="sourceKeys" value="${esc(item.key)}" ${selected.has(item.key)?'checked':''}><span><strong>${esc(item.name)}</strong><small>${esc(item.kind)}${f?` · ${size(f.size)}`:''}${!item.materialId?' · 生成时识别':''}</small></span></label>${button('source-menu','更多','link-button tw-source-more',`data-key="${esc(item.key)}" aria-label="${esc(item.name)}的操作" aria-expanded="${menuOpen}" aria-controls="${esc(menuId)}"`)}<div id="${esc(menuId)}" class="tw-source-options" role="group" aria-label="${esc(item.name)}的操作选项" ${menuOpen?'':'hidden'}>${f?`<a href="/api/tasks/${url(id)}/sources/${url(f.id)}/download" download>下载原件</a>`:''}${item.materialId?button('material-open','查看／修改文字','link-button',`data-id="${esc(item.materialId)}"`):'<span class="hint">生成时自动识别正文</span>'}${button('remove','删除','link-button danger',`data-key="${esc(item.key)}"`)}</div>${isOpen?`<div class="tw-inline-confirm tw-source-confirm"><p>确认删除此资料？已生成文档的来源记录会保留。</p><div class="button-row">${button('remove-cancel','取消','button small')}${button('remove-confirm','确认删除','button small danger',`data-key="${esc(item.key)}"`)}</div></div>`:''}</div>`;
   }
   function sources(){
     const list=items();
@@ -129,7 +130,8 @@ export function createTaskWorkflow({api,esc,icon,action,option,timeText,badge,to
     if(name==='material-close'){if(materialEditor?.dirty)materialEditor.discardPrompt=true;else materialEditor=null;rerender();return;}
     if(name==='material-discard'){materialEditor=null;rerender();return;}
     if(name==='material-open'){if(materialEditor?.dirty&&materialEditor.id!==target){error='当前文字资料尚未保存，请先保存或关闭编辑。';rerender();return;}await run(async()=>{if(materialEditor?.id===target)return;const r=await api(`/api/ai/materials/${url(target)}`);materialEditor={...r.material,dirty:false};});return;}
-    if(name==='remove'){removeKey=el.dataset.key;rerender();return;}
+    if(name==='source-menu'){sourceMenuKey=sourceMenuKey===el.dataset.key?'':el.dataset.key;removeKey='';rerender();return;}
+    if(name==='remove'){removeKey=el.dataset.key;sourceMenuKey='';rerender();return;}
     if(name==='remove-cancel'){removeKey='';rerender();return;}
     if(name==='remove-confirm'){await run(async()=>{const item=items().find(item=>item.key===el.dataset.key);if(!item)return;if(item.materialId===materialEditor?.id&&materialEditor.dirty)throw new Error('此资料有未保存修改，请先保存或放弃修改。');if(item.source)await post(`/api/tasks/${url(id)}/sources/${url(item.source.id)}`,{},'DELETE');else await post(`/api/ai/materials/${url(item.materialId)}`,{},'DELETE');if(item.materialId===materialEditor?.id)materialEditor=null;selected.delete(item.key);removeKey='';await reload();},'资料已删除');return;}
     if(name==='template-clear'){customTemplate=null;resetConsent();rerender();return;}
