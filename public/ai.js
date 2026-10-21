@@ -1,4 +1,5 @@
 import {createModelSettings} from './ai-settings.js';
+import {modelService,runAiJob} from './ai-service-info.js';
 
 // AI 文档工作区。模型调用必须来自明确的用户操作。
 export function createAiOffice(ui) {
@@ -20,7 +21,7 @@ export function createAiOffice(ui) {
   const ready=()=>state.settings.enabled&&state.settings.model&&!state.settings.configError;
   const modelSettings=createModelSettings({esc,openDrawer,action,request,rerender,getSettings:()=>state.settings,saveSettings:async payload=>{
     const result=await post('/api/ai/settings',payload,'PATCH');state.settings=result.settings;return result;
-  },testConnection:()=>post('/api/ai/test',{consent:true})});
+  },testConnection:(target='text')=>post('/api/ai/test',{consent:true,target})});
 
   async function load(render=true) {
     if(loading)return loading;
@@ -32,8 +33,14 @@ export function createAiOffice(ui) {
     return loading;
   }
   function showError(error,form=document.querySelector('.drawer form')) {
+    if(error.partialText&&form?.id==='ai-material-form')preserveTranscription(form,error.partialText,'完整转写未成功。下面是已完成段落，可复制整理到素材正文；重新转写会再次发送录音。');
     const el=form?.querySelector('.form-error');
     if(el){el.textContent=error.message;el.scrollIntoView({block:'nearest'});}else toast(error.message,true);
+  }
+  function preserveTranscription(form,text,hint){
+    let pending=form.querySelector('#ai-transcription-pending');
+    if(!pending){pending=document.createElement('div');pending.id='ai-transcription-pending';pending.className='field';pending.innerHTML='<label for="ai-transcription-result">已完成的转写正文</label><textarea id="ai-transcription-result" rows="10" readonly></textarea><span class="hint"></span>';form.querySelector('.ai-audio .ai-form-stack').append(pending);}
+    pending.querySelector('textarea').value=text;pending.querySelector('.hint').textContent=hint;
   }
   async function request(form,label,fn,trigger=null) {
     if(busy)return null;
@@ -80,9 +87,9 @@ export function createAiOffice(ui) {
     openDrawer('测试模型连接',`<form id="ai-test-form">${errorBox}<div class="ai-form-stack"><p class="ai-note">将向 <strong>${esc(endpoint())}</strong> 的 <strong>${esc(state.settings.model||'未配置')}</strong> 模型发送一段固定虚构文字，请确认后测试。</p><p class="subtitle">测试不读取任务、素材或文档。第三方服务可能按请求计费。</p><label class="ai-check"><input name="consent" type="checkbox" required><span>我同意向上述模型服务发送固定虚构测试文字</span></label></div></form>`,`${action('close','取消','button')}${submit('ai-test-form','确认测试连接')}`);
   }
   function materialForm(m={}) {
-    const s=state.settings;
+    const s=state.settings,audio=modelService(s,'transcription');
     editor=null;
-    openDrawer(m.id?'编辑素材':'添加素材',`<form id="ai-material-form" data-id="${esc(m.id||'')}">${errorBox}<div class="ai-form-stack">${textField('资料名称','title',m.title,'required maxlength="200"')}<div class="form-grid"><div class="field"><label for="ai-kind">资料类型</label><select id="ai-kind" name="kind">${['素材','历史样例'].map(v=>option(v,m.kind||'素材')).join('')}</select><span class="hint">历史样例仅供格式参考，不应当作本次事实。</span></div>${taskSelect(m.taskId)}</div><div class="ai-import"><label for="ai-material-file">从文件导入正文</label><input id="ai-material-file" type="file" accept=".txt,.md,.csv,.docx"><p>支持文本、Markdown、表格文本和 Word，文件不超过 1 兆。仅在本机提取，选择文件后会替换下方正文。</p></div>${textArea('素材正文','content',m.content,'required maxlength="20000" rows="12" placeholder="粘贴会议记录、事实数据或历史样例正文"')}<details class="ai-audio"><summary>录音转写为素材（选用）</summary><div class="ai-form-stack"><p>转写服务：<strong>${esc(endpoint())}</strong><br>转写模型：${esc(s.transcriptionModel||'尚未配置，请先在模型设置中填写')}</p><input id="ai-audio-file" type="file" accept=".mp3,.wav,.m4a,.webm,.mp4,.ogg,.flac" aria-label="选择录音文件"><p class="hint">最大 20 兆。录音会发往上述服务；转写结果追加到正文，核对后点击保存。</p><label class="ai-check"><input id="ai-audio-consent" type="checkbox"><span>我同意将所选录音发送给上述服务进行转写</span></label>${button('transcribe','开始转写','button small',`${!s.transcriptionModel||!s.enabled?'disabled':''}`)}</div></details></div></form>`,`${action('close','取消','button')}${submit('ai-material-form','保存素材')}`);
+    openDrawer(m.id?'编辑素材':'添加素材',`<form id="ai-material-form" data-id="${esc(m.id||'')}">${errorBox}<div class="ai-form-stack">${textField('资料名称','title',m.title,'required maxlength="200"')}<div class="form-grid"><div class="field"><label for="ai-kind">资料类型</label><select id="ai-kind" name="kind">${['素材','历史样例'].map(v=>option(v,m.kind||'素材')).join('')}</select><span class="hint">历史样例仅供格式参考，不应当作本次事实。</span></div>${taskSelect(m.taskId)}</div><div class="ai-import"><label for="ai-material-file">从文件导入正文</label><input id="ai-material-file" type="file" accept=".txt,.md,.csv,.docx"><p>支持文本、Markdown、表格文本和 Word，文件不超过 1 兆。仅在本机提取，选择文件后会替换下方正文。</p></div>${textArea('素材正文','content',m.content,'required maxlength="60000" rows="12" placeholder="粘贴会议记录、事实数据或历史样例正文"')}<details class="ai-audio"><summary>录音转写为素材（选用）</summary><div class="ai-form-stack"><p>转写服务：<strong>${esc(audio.baseUrl)}</strong><br>转写模型：${esc(audio.model||'尚未配置，请先在模型设置中填写')}</p><input id="ai-audio-file" type="file" accept=".mp3,.wav,.m4a,.webm,.mp4,.ogg,.flac" aria-label="选择录音文件"><p class="hint">千问支持最大 100 兆、最长 4 小时的录音，本机分成短段后逐段转写；其他兼容接口最大 20 兆。录音会发往上述服务，核对转写结果后保存素材。</p><label class="ai-check"><input id="ai-audio-consent" type="checkbox"><span>我同意将所选录音发送给上述服务进行转写</span></label>${button('transcribe','开始转写','button small',`${!s.transcriptionModel||!s.enabled?'disabled':''}`)}</div></details></div></form>`,`${action('close','取消','button')}${submit('ai-material-form','保存素材')}`);
   }
   function templateForm(t={}) {
     editor=null;
@@ -100,7 +107,7 @@ export function createAiOffice(ui) {
       if(!ready())throw new Error('请先在「模型设置」中配置并启用文档模型。');
       const title=form.elements.historyTitle.value.trim()||'历史文档',content=form.elements.historyContent.value.trim();
       if(!content)throw new Error('请先导入历史文档或粘贴历史正文。');
-      if(content.length>20000)throw new Error('历史正文不能超过 20000 字，请整理后重试。');
+      if(content.length>20000)throw new Error('历史正文不能超过 60000 字，请整理后重试。');
       if(!form.querySelector('#ai-template-consent').checked)throw new Error('请先核对历史正文，并勾选同意发送给上述模型服务。');
       const result=await request(form,'正在识别，请稍候…',()=>post('/api/ai/templates/analyze',{title,content,consent:true}),trigger);
       if(result){
@@ -245,14 +252,14 @@ export function createAiOffice(ui) {
     const form=document.querySelector('#ai-material-form'),input=document.querySelector('#ai-audio-file');
     try{
       const file=input.files?.[0];if(!file)throw new Error('请先选择录音文件。');
-      if(!file.size||file.size>20*1024*1024)throw new Error('录音文件必须非空，且不超过 20 兆。');
+      const max=modelService(state.settings,'transcription').provider==='qwen'?100:20;if(!file.size||file.size>max*1024*1024)throw new Error('录音文件必须非空，且不超过 '+max+' 兆。');
       if(!document.querySelector('#ai-audio-consent').checked)throw new Error('请先勾选同意将录音发送给模型服务。');
-      const result=await request(form,'正在转写，请稍候…',async()=>post('/api/ai/transcribe',{file:{name:file.name,contentBase64:await readBase64(file)},consent:true}));
+      const result=await request(form,'正在转写，请稍候…',async()=>runAiJob(api,'/api/ai/transcribe-jobs',{file:{name:file.name,contentBase64:await readBase64(file)},consent:true},message=>{const el=form.querySelector('.ai-audio .hint');if(el)el.textContent=message;}));
       if(result){
         const old=form.elements.content.value.trim(),text=result.value.text||'';
-        if((old.length+text.length+(old?2:0))>20000){
+        if((old.length+text.length+(old?2:0))>60000){
           let pending=document.querySelector('#ai-transcription-pending');
-          if(!pending){pending=document.createElement('div');pending.id='ai-transcription-pending';pending.className='field';pending.innerHTML='<label for="ai-transcription-result">已完成的转写正文</label><textarea id="ai-transcription-result" rows="10" readonly></textarea><span class="hint">与现有正文合并后超过 20000 字。请从这里复制需要的部分整理到素材正文，无需再次转写。</span>';document.querySelector('.ai-audio .ai-form-stack').append(pending);}
+          if(!pending){pending=document.createElement('div');pending.id='ai-transcription-pending';pending.className='field';pending.innerHTML='<label for="ai-transcription-result">已完成的转写正文</label><textarea id="ai-transcription-result" rows="10" readonly></textarea><span class="hint">与现有正文合并后超过 60000 字。请从这里复制需要的部分整理到素材正文，无需再次转写。</span>';document.querySelector('.ai-audio .ai-form-stack').append(pending);}
           pending.querySelector('textarea').value=text;pending.scrollIntoView({block:'nearest'});
           toast('转写已完成；合并超出字数限制，请从保留的结果中整理素材');
         }else{form.elements.content.value=old?`${old}\n\n${text}`:text;toast('转写已追加到正文，请核对后保存素材');}

@@ -1,4 +1,5 @@
 import {createAiOffice} from './ai.js';
+import {createTaskWorkflow} from './task-workflow.js';
 
 const icons = {
   grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -45,7 +46,7 @@ const avatar = name => `<span class="avatar">${esc((name==='管理员'?'管':(na
 const option = (value,selected,label=value) => `<option value="${esc(value)}" ${String(value)===String(selected)?'selected':''}>${esc(label)}</option>`;
 const action = (name, label, cls='', extra='') => `<button type="button" class="${cls}" data-action="${name}" ${extra}>${label}</button>`;
 let data = {tasks:[],templates:[],reminders:[],events:[],settings:{adminName:'管理员',reminderDays:1},system:{}};
-let page = ['overview','tasks','templates','reminders','ai','settings'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
+let page = /^#task\/.+/.test(location.hash)?'task':['overview','tasks','templates','reminders','ai','settings'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let taskFilter='全部',query='',ownerFilter='',submissionFilter='',layout='table',reminderFilter='未读',loadError='',loading=true,taskPage=1;
 let focusBeforeModal=null;
 let completionDraft=null,completionBusy=false;
@@ -53,15 +54,17 @@ let serverchanBusy=false;
 let attachmentBusy=false;
 const pageNames={overview:'工作总览',tasks:'任务台账',templates:'固定任务',reminders:'提醒中心',ai:'AI 文档',settings:'平台设置'};
 const ai=createAiOffice({api,esc,icon,action,option,heading,empty,timeText,openDrawer,closeDrawer,toast,getTasks:()=>data.tasks,rerender:()=>{if(page==='ai')renderApp();}});
+const workflow=createTaskWorkflow({api,esc,icon,action,option,timeText,badge,toast,rerender:()=>{if(page==='task')renderApp();},onTaskChange:()=>refresh(false),openTaskForm:taskForm,openRecords:detail,openCompletion:completionForm,navigate});
+function openWorkspace(id){closeDrawer();page='task';location.hash=`task/${encodeURIComponent(id)}`;workflow.open(id);renderApp();window.scrollTo(0,0);}
 
 async function api(path,options={}){
   const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...options.headers}});
   const result=await response.json().catch(()=>({error:'服务返回异常，请稍后重试'}));
-  if(!response.ok) throw new Error(result.error||'操作未完成，请稍后重试');
+  if(!response.ok){const error=new Error(result.error||'操作未完成，请稍后重试');error.status=response.status;throw error;}
   return result;
 }
 async function refresh(render=true){
-  try{data=await api('/api/state');loading=false;loadError='';if(page==='ai')await ai.load(false);if(render)renderApp();return true;}
+  try{data=await api('/api/state');loading=false;loadError='';if(page==='ai')await ai.load(false);if(render&&page==='task')await workflow.reload();if(render)renderApp();return true;}
   catch(error){loading=false;loadError='暂时无法连接本地服务。请确认平台已启动，再点击重试。';if(render)renderApp();return false;}
 }
 function toast(message,error=false){const el=document.createElement('div');el.className=`toast${error?' error':''}`;el.textContent=message;document.querySelector('#toast-root').append(el);setTimeout(()=>el.remove(),4500);}
@@ -74,10 +77,10 @@ function weekContains(value){const t=today();const day=new Date(`${t}T12:00:00Z`
 function heading(title,subtitle,buttons=''){return `<div class="page-heading"><div class="page-heading-copy"><h1>${title}</h1>${subtitle?`<p class="subtitle">${subtitle}</p>`:''}</div>${buttons?`<div class="button-row">${buttons}</div>`:''}</div>`;}
 function renderApp(){
   const unread=data.reminders.filter(r=>!r.read).length;
-  document.title=`${pageNames[page]} · AI辅助办公应用`;
-  document.querySelector('#app').innerHTML=`<div class="shell"><aside class="sidebar"><a class="brand" href="#overview" aria-label="AI辅助办公应用首页"><span class="brand-name">AI辅助办公应用</span><span class="brand-sub">本地工作台</span></a><nav class="nav" aria-label="主导航">${Object.entries(pageNames).map(([key,label])=>action('navigate',`${icon(({overview:'grid',tasks:'list',templates:'repeat',reminders:'bell',ai:'list',settings:'settings'})[key])}<span>${label}</span>${key==='reminders'&&unread?`<span class="nav-count">${unread}</span>`:''}`,`nav-btn ${page===key?'active':''}`,`data-page="${key}" ${page===key?'aria-current="page"':''}`)).join('')}</nav><div class="sidebar-footer"><span>本地版</span>${action('roadmap','关于平台','link-button')}</div></aside><div class="main-shell"><header class="topbar"><div class="breadcrumb">${action('menu',icon('menu'),'icon-btn mobile-menu','aria-label="打开导航菜单"')}<span>办公平台</span>${icon('chevron')}<strong>${pageNames[page]}</strong></div><div class="top-actions"><span class="date">${fullDate()}</span>${action('navigate',`${icon('bell')}${unread?'<span class="unread-dot"></span>':''}`,'icon-btn',`data-page="reminders" aria-label="提醒中心，${unread}条未读"`)}<div class="profile"><span>${esc(data.settings.adminName)}</span></div></div></header><main class="main" id="main-content">${loadError?`<div class="error-banner">${loadError} ${action('retry','重新连接','button small')}</div>`:''}${loading?'<div class="skeleton">正在读取本地工作台…</div>':renderPage()}<footer class="page-footer"><span>AI辅助办公应用 · 本地版</span></footer></main></div></div>`;
+  document.title=`${page==='task'?'整理并完成':pageNames[page]} · AI辅助办公应用`;
+  document.querySelector('#app').innerHTML=`<div class="shell"><aside class="sidebar"><a class="brand" href="#overview" aria-label="AI辅助办公应用首页"><span class="brand-name">AI辅助办公应用</span><span class="brand-sub">本地工作台</span></a><nav class="nav" aria-label="主导航">${Object.entries(pageNames).map(([key,label])=>action('navigate',`${icon(({overview:'grid',tasks:'list',templates:'repeat',reminders:'bell',ai:'list',settings:'settings'})[key])}<span>${label}</span>${key==='reminders'&&unread?`<span class="nav-count">${unread}</span>`:''}`,`nav-btn ${(page===key||page==='task'&&key==='tasks')?'active':''}`,`data-page="${key}" ${(page===key||page==='task'&&key==='tasks')?'aria-current="page"':''}`)).join('')}</nav><div class="sidebar-footer"><span>本地版</span>${action('roadmap','关于平台','link-button')}</div></aside><div class="main-shell"><header class="topbar"><div class="breadcrumb">${action('menu',icon('menu'),'icon-btn mobile-menu','aria-label="打开导航菜单"')}<span>办公平台</span>${icon('chevron')}<strong>${page==='task'?'整理并完成':pageNames[page]}</strong></div><div class="top-actions"><span class="date">${fullDate()}</span>${action('navigate',`${icon('bell')}${unread?'<span class="unread-dot"></span>':''}`,'icon-btn',`data-page="reminders" aria-label="提醒中心，${unread}条未读"`)}<div class="profile"><span>${esc(data.settings.adminName)}</span></div></div></header><main class="main" id="main-content">${loadError?`<div class="error-banner">${loadError} ${action('retry','重新连接','button small')}</div>`:''}${loading?'<div class="skeleton">正在读取本地工作台…</div>':renderPage()}<footer class="page-footer"><span>AI辅助办公应用 · 本地版</span></footer></main></div></div>`;
 }
-function renderPage(){return ({overview:overviewPage,tasks:tasksPage,templates:templatesPage,reminders:remindersPage,ai:()=>ai.render(),settings:settingsPage})[page]();}
+function renderPage(){return ({overview:overviewPage,tasks:tasksPage,task:()=>workflow.render(),templates:templatesPage,reminders:remindersPage,ai:()=>ai.render(),settings:settingsPage})[page]();}
 function overviewPage(){const w=weekTasks(),done=w.filter(t=>t.status==='已完成').length,percent=w.length?Math.round(done/w.length*100):0;const due=data.tasks.filter(t=>t.status!=='已完成').sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,3);return `${heading('工作总览',`共 ${data.tasks.length} 项任务，${data.tasks.filter(t=>t.status!=='已完成').length} 项未完成。`,action('new-task',`${icon('plus')} 新建任务`,'button primary'))}${stats()}${taskPanel(true)}<div class="overview-secondary"><section class="panel"><div class="panel-heading"><h2>近期到期</h2>${action('navigate','查看全部','link-button','data-page="tasks"')}</div><div class="notice-list">${due.length?due.map(t=>action('detail',`<span class="notice-date">${dateText(t.dueDate)}</span><span class="notice-info"><h3>${esc(t.title)}</h3><p>${esc(t.owner)} · ${overdue(t)?'已逾期':t.dueDate===today()?'今天截止':'待处理'}</p></span>`,'notice-item',`data-id="${t.id}"`)).join(''):empty('暂无待办任务','当前任务已完成。')}</div><div class="week-summary"><div><span>本周到期任务</span><span>已完成 ${done} / ${w.length}</span></div><div class="progress-track" role="progressbar" aria-label="本周任务完成率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div></div></section><section class="panel"><div class="panel-heading"><h2>最近动态</h2><span class="small-label">最近 4 条记录</span></div>${activity(data.events.slice(0,4))}</section></div>`;}
 function tasksPage(){return `${heading('任务台账','查看、分派和跟进全部任务。',`${action('trash',`${icon('trash')} 回收站`,'button')}<a class="button" href="/api/export/tasks" download>${icon('download')} 导出台账</a>${action('new-task',`${icon('plus')} 新建任务`,'button primary')}`)}${taskPanel(false)}`;}
 function filteredTasks(){const q=query.trim().toLowerCase();return data.tasks.filter(t=>(taskFilter==='全部'||taskFilter==='已逾期'?taskFilter==='全部'||overdue(t):t.status===taskFilter)&&(!q||[t.title,t.owner,t.deliverable,String(t.number)].some(v=>String(v||'').toLowerCase().includes(q)))&&(!ownerFilter||t.owner===ownerFilter)&&(!submissionFilter||taskSubmissionType(t)===submissionFilter)).sort((a,b)=>(a.status==='已完成')-(b.status==='已完成')||a.dueDate.localeCompare(b.dueDate)||b.createdAt.localeCompare(a.createdAt));}
@@ -91,7 +94,7 @@ function taskResults(compact){
   const pageOptions=Array.from({length:pageCount},(_,i)=>option(i+1,taskPage,`第 ${i+1} 页`)).join('');
   return `${content}<div class="table-footer"><span class="pagination-summary">共 ${tasks.length} 项${tasks.length?`，本页 ${start+1}—${start+shown.length} 项`:''}</span><nav class="pagination" aria-label="任务分页">${action('task-page','上一页','button small',`data-page-number="${taskPage-1}" ${taskPage===1?'disabled':''}`)}<label class="page-select-label"><span class="visually-hidden">选择页码</span><select id="task-page-select" aria-label="任务页码">${pageOptions}</select><span> / ${pageCount} 页</span></label>${action('task-page','下一页','button small',`data-page-number="${taskPage+1}" ${taskPage===pageCount?'disabled':''}`)}</nav></div>`;
 }
-function taskActions(t,cls){return `${action('edit-task','编辑任务',cls,`data-id="${t.id}"`)}${t.status==='已完成'?action('detail','查看',cls,`data-id="${t.id}"`):action('status',t.status==='待办'?'开始处理':'标记完成',cls,`data-id="${t.id}" data-status="${t.status==='待办'?'进行中':'已完成'}"`)}`;}
+function taskActions(t,cls){return `${action('edit-task','编辑任务',cls,`data-id="${t.id}"`)}${t.status==='已完成'?action('detail','查看',cls,`data-id="${t.id}"`):action('status','标记完成',cls,`data-id="${t.id}" data-status="已完成"`)}`;}
 function taskBoard(tasks){return `<div class="board">${['待办','进行中','已完成'].map(status=>{const list=tasks.filter(t=>t.status===status);return `<section class="board-column"><h3>${status} · 本页 ${list.length} 项</h3>${list.map(t=>`<article class="board-card">${badge(t)}${action('detail',esc(t.title),'board-task-title',`data-id="${t.id}"`)}<div class="board-card-footer"><span>${esc(t.owner)}</span><span>${dateText(t.dueDate)}截止</span></div><p class="board-submission">提交形式：${esc(taskSubmissionType(t))}</p><div class="board-actions">${taskActions(t,'row-action')}${action('delete-task','删除','row-action danger',`data-id="${t.id}"`)}</div></article>`).join('')}${!list.length?'<p class="subtitle">本页暂无任务</p>':''}</section>`;}).join('')}</div>`;}
 function activity(events){return events.length?`<div class="activity-list">${events.map(e=>`<div class="activity-item"><span class="activity-symbol">${icon(e.action.includes('完成')?'check':'edit')}</span><div class="activity-info"><strong>${esc(e.actor||'管理员')}</strong> · ${esc(e.action)}<div class="activity-detail" title="${esc(e.detail)}">${esc(e.detail)}</div></div><time class="activity-time">${timeText(e.createdAt)}</time></div>`).join('')}</div>`:empty('暂无操作记录','任务新增、改派和状态变更将记录在这里。');}
 function empty(title,text){return `<div class="empty">${icon('folder')}<h3>${title}</h3><p>${text}</p></div>`;}
@@ -160,7 +163,7 @@ function openDrawer(title,body,footer='',layout='center'){
   requestAnimationFrame(()=>document.querySelector('.drawer input:not([type=file]), .drawer textarea, .drawer')?.focus());
 }
 function closeDrawer(){
-  if(completionBusy||serverchanBusy||attachmentBusy||ai.busy)return;
+  if(completionBusy||serverchanBusy||attachmentBusy||ai.busy||workflow.busy)return;
   completionDraft=null;document.querySelector('#overlay-root').innerHTML='';document.body.style.overflow='';
   const target=focusBeforeModal?.isConnected?focusBeforeModal:focusBeforeModal?.dataset.action==='serverchan-configure'?document.querySelector('[data-action="serverchan-configure"]'):null;
   target?.focus();
@@ -176,13 +179,13 @@ async function openTrash(){
 function field(label,name,value='',type='text',extra='',full=false){return `<div class="field ${full?'full':''}"><label for="field-${name}">${label}${extra.includes('required')?' <span class="required">*</span>':''}</label><input id="field-${name}" name="${name}" type="${type}" value="${esc(value)}" ${extra}></div>`;}
 function selectField(label,name,value,choices,full=false){return `<div class="field ${full?'full':''}"><label for="field-${name}">${label}</label><select id="field-${name}" name="${name}">${choices.map(v=>option(v,value)).join('')}</select></div>`;}
 function textareaField(label,name,value,extra=''){return `<div class="field full"><label for="field-${name}">${label}${extra.includes('required')?' <span class="required">*</span>':''}</label><textarea id="field-${name}" name="${name}" ${extra}>${esc(value)}</textarea></div>`;}
-function taskForm(id){const t=data.tasks.find(t=>t.id===id)||{startDate:today(),dueDate:shiftDate(today(),3),submissionType:'文本',category:'临时任务',status:'待办'};openDrawer(id?'编辑任务':'新建任务',`<p class="subtitle" style="margin:0 0 22px">填写任务信息，带 * 的为必填项。完成任务需通过「标记完成」上传材料。</p><form id="task-form" data-id="${id||''}"><div class="form-error" role="alert"></div><div class="form-grid">${field('任务名称','title',t.title,'text','required maxlength="120" placeholder="例如：完成本周生产例会纪要"',true)}${field('负责人','owner',t.owner,'text','required maxlength="50" placeholder="请输入负责人姓名"')}${selectField('任务分类','category',t.category,['临时任务','固定任务','党建工作'])}${field('开始日期','startDate',t.startDate,'date','required')}${field('截止日期','dueDate',t.dueDate,'date','required')}${selectField('提交形式','submissionType',taskSubmissionType(t),submissionTypes)}${selectField('任务状态','status',t.status,t.status==='已完成'?['待办','进行中','已完成']:['待办','进行中'])}${t.status==='已完成'?'<p class="hint field full">已完成任务可保留当前状态；若要变更为现有材料不支持的提交形式，请先重新打开任务。</p>':''}${textareaField('交付要求','deliverable',t.deliverable,'required maxlength="2000" placeholder="需要提交什么材料，达到什么标准？"')}${textareaField('补充说明','description',t.description,'maxlength="4000" placeholder="背景、注意事项或相关安排（选填）"')}</div></form>`,`${action('close','取消','button')}<button type="submit" form="task-form" class="button primary">${id?'保存修改':'创建任务'}</button>`);}
+function taskForm(id){const t=data.tasks.find(t=>t.id===id)||{startDate:today(),dueDate:shiftDate(today(),3),submissionType:'文本',category:'临时任务',status:'待办'};openDrawer(id?'编辑任务':'新建任务',`<p class="subtitle" style="margin:0 0 22px">填写任务信息，带 * 的为必填项。点击任务的“标记完成”，即可上传素材、生成正文并提交。</p><form id="task-form" data-id="${id||''}"><div class="form-error" role="alert"></div><div class="form-grid">${field('任务名称','title',t.title,'text','required maxlength="120" placeholder="例如：完成本周生产例会纪要"',true)}${field('负责人','owner',t.owner,'text','required maxlength="50" placeholder="请输入负责人姓名"')}${selectField('任务分类','category',t.category,['临时任务','固定任务','党建工作'])}${field('开始日期','startDate',t.startDate,'date','required')}${field('截止日期','dueDate',t.dueDate,'date','required')}${selectField('提交形式','submissionType',taskSubmissionType(t),submissionTypes)}${selectField('任务状态','status',t.status,t.status==='已完成'?['待办','进行中','已完成']:['待办','进行中'])}${t.status==='已完成'?'<p class="hint field full">已完成任务可保留当前状态；若要变更为现有材料不支持的提交形式，请先重新打开任务。</p>':''}${textareaField('交付要求','deliverable',t.deliverable,'required maxlength="2000" placeholder="需要提交什么材料，达到什么标准？"')}${textareaField('补充说明','description',t.description,'maxlength="4000" placeholder="背景、注意事项或相关安排（选填）"')}</div></form>`,`${action('close','取消','button')}<button type="submit" form="task-form" class="button primary">${id?'保存修改':'创建任务'}</button>`);}
 function attachmentList(t){const attachments=t.attachments||[];return attachments.length?`<ul class="attachment-list">${attachments.map(a=>`<li><div class="attachment-info"><div class="attachment-heading"><a class="attachment-download" href="/api/attachments/${encodeURIComponent(a.id)}" download>${icon('download')}<span>${esc(a.name)}</span></a>${action('delete-attachment','删除','link-button danger',`data-id="${esc(a.id)}" data-task-id="${esc(t.id)}" aria-label="删除已提交材料：${esc(a.name)}"`)}</div><p>${fileSizeText(a.size)} · ${timeText(a.uploadedAt)} · ${esc(a.submissionType||'文本')}</p>${a.note?`<p class="attachment-note">提交说明：${esc(a.note)}</p>`:''}</div></li>`).join('')}</ul>`:`<p class="attachment-empty">${t.status==='已完成'?'历史完成任务：当时未要求上传材料。':'尚未提交材料，标记完成时需上传。'}</p>`;}
 function deletedAttachmentList(t,expanded=false){
   const attachments=t.deletedAttachments||[];if(!attachments.length)return '';
   return `<details class="deleted-attachments" ${expanded?'open':''}><summary>已删除材料（${attachments.length} 份）</summary><p class="attachment-empty">可在此恢复已删除的材料。恢复材料不会自动完成任务。</p><div id="attachment-action-error" class="form-error" role="alert"></div><ul class="attachment-list">${attachments.map(a=>`<li><div class="attachment-heading"><div class="attachment-info"><strong class="deleted-attachment-name">${esc(a.name)}</strong><p>${fileSizeText(a.size)} · 删除于 ${timeText(a.deletedAt)}</p></div>${action('restore-attachment','恢复','button small',`data-id="${esc(a.id)}" data-task-id="${esc(t.id)}" aria-label="恢复已删除材料：${esc(a.name)}"`)}</div></li>`).join('')}</ul></details>`;
 }
-function detail(id,showDeleted=false){const t=data.tasks.find(t=>t.id===id);if(!t){toast('此任务暂时不可用，请刷新后重试',true);return;}openDrawer('任务详情',`<div class="button-row">${badge(t)}<span class="subtitle">提交形式：${esc(taskSubmissionType(t))}</span><span class="subtitle">第 ${t.number} 号</span></div><h3 class="detail-title">${esc(t.title)}</h3><dl class="detail-grid"><div><dt>负责人</dt><dd>${esc(t.owner)}</dd></div><div><dt>任务分类</dt><dd>${esc(t.category)}</dd></div><div><dt>开始日期</dt><dd>${t.startDate}</dd></div><div><dt>截止日期</dt><dd>${t.dueDate}</dd></div>${t.completedAt?`<div><dt>完成时间</dt><dd>${timeText(t.completedAt)}</dd></div>`:''}${t.templateId?'<div><dt>任务来源</dt><dd>固定规则自动生成</dd></div>':''}</dl><div class="detail-section"><h3>交付要求</h3><p>${esc(t.deliverable)}</p></div>${t.description?`<div class="detail-section"><h3>补充说明</h3><p>${esc(t.description)}</p></div>`:''}<div class="detail-section"><h3>提交材料${(t.attachments||[]).length?`（${t.attachments.length} 份）`:''}</h3>${attachmentList(t)}${deletedAttachmentList(t,showDeleted)}</div><div class="detail-section"><h3>操作记录</h3>${activity(data.events.filter(e=>e.taskId===t.id))}</div>`,`${action('delete-task','删除任务','button danger drawer-delete',`data-id="${id}"`)}${action('ai-generate','AI 起草','button',`data-task-id="${id}"`)}${action('edit-task',`${icon('edit')} 编辑任务`,'button',`data-id="${id}"`)}${action('status',t.status==='已完成'?'重新打开':t.status==='待办'?'开始处理':'标记完成','button primary',`data-id="${id}" data-status="${t.status==='已完成'?'待办':t.status==='待办'?'进行中':'已完成'}" data-detail="true"`)}`);}
+function detail(id,showDeleted=false){const t=data.tasks.find(t=>t.id===id);if(!t){toast('此任务暂时不可用，请刷新后重试',true);return;}openDrawer('任务详情',`<div class="button-row">${badge(t)}<span class="subtitle">提交形式：${esc(taskSubmissionType(t))}</span><span class="subtitle">第 ${t.number} 号</span></div><h3 class="detail-title">${esc(t.title)}</h3><dl class="detail-grid"><div><dt>负责人</dt><dd>${esc(t.owner)}</dd></div><div><dt>任务分类</dt><dd>${esc(t.category)}</dd></div><div><dt>开始日期</dt><dd>${t.startDate}</dd></div><div><dt>截止日期</dt><dd>${t.dueDate}</dd></div>${t.completedAt?`<div><dt>完成时间</dt><dd>${timeText(t.completedAt)}</dd></div>`:''}${t.templateId?'<div><dt>任务来源</dt><dd>固定规则自动生成</dd></div>':''}</dl><div class="detail-section"><h3>交付要求</h3><p>${esc(t.deliverable)}</p></div>${t.description?`<div class="detail-section"><h3>补充说明</h3><p>${esc(t.description)}</p></div>`:''}<div class="detail-section"><h3>提交材料${(t.attachments||[]).length?`（${t.attachments.length} 份）`:''}</h3>${attachmentList(t)}${deletedAttachmentList(t,showDeleted)}</div><div class="detail-section"><h3>操作记录</h3>${activity(data.events.filter(e=>e.taskId===t.id))}</div>`,`${action('delete-task','删除任务','button danger drawer-delete',`data-id="${id}"`)}${action('edit-task',`${icon('edit')} 编辑任务`,'button',`data-id="${id}"`)}${action('status',t.status==='已完成'?'重新打开':'标记完成','button primary',`data-id="${id}" data-status="${t.status==='已完成'?'待办':'已完成'}" data-detail="true"`)}`);}
 function confirmDeleteAttachment(id,taskId){
   const task=data.tasks.find(t=>t.id===taskId),attachment=task?.attachments?.find(a=>a.id===id);
   if(!attachment){toast('此材料暂时不可用，请刷新后重试',true);return;}
@@ -249,19 +252,21 @@ async function submitCompletion(form){
 document.addEventListener('click',async e=>{
   const button=e.target.closest('[data-action]');if(!button){return;}
   const a=button.dataset.action,id=button.dataset.id;
-  if(completionBusy||serverchanBusy||attachmentBusy||ai.busy)return;
+  if(a.startsWith('tw-')){await workflow.onAction(a.slice(3),button);return;}
+  if(completionBusy||serverchanBusy||attachmentBusy||ai.busy||workflow.busy)return;
   if(a.startsWith('ai-')){await ai.onAction(a.slice(3),button);return;}
   if(a==='serverchan-configure'){serverchanForm();return;}
   if(a==='serverchan-test'||a==='serverchan-send'||a==='serverchan-clear'){await serverchanRequest(a.slice('serverchan-'.length),button);return;}
   if(a==='serverchan-clear-prompt'||a==='serverchan-clear-cancel'){document.querySelector('#serverchan-clear-confirm').hidden=a==='serverchan-clear-cancel';return;}
   if(a==='task-page'){taskPage=Math.max(1,Number(button.dataset.pageNumber)||1);renderApp();return;}
   if(a==='remove-completion-file'){if(completionDraft){completionDraft.files.splice(Number(button.dataset.index),1);renderCompletionFiles();}return;}
-  if(a==='status'&&button.dataset.status==='已完成'){completionForm(id);return;}
+  if(a==='status'&&button.dataset.status==='已完成'){openWorkspace(id);return;}
   if(a==='navigate'){navigate(button.dataset.page);return;}
   if(a==='menu'){document.querySelector('.sidebar').classList.toggle('mobile-open');return;}
   if(a==='close'){closeDrawer();return;}
   if(a==='new-task'||a==='edit-task'){taskForm(id);return;}
   if(a==='detail'){detail(id);return;}
+  if(a==='workspace'){openWorkspace(id);return;}
   if(a==='delete-attachment'){confirmDeleteAttachment(id,button.dataset.taskId);return;}
   if(a==='cancel-delete-attachment'){detail(button.dataset.taskId);return;}
   if(a==='confirm-delete-attachment'||a==='restore-attachment'){await changeAttachment(a==='confirm-delete-attachment'?'delete':'restore',id,button.dataset.taskId,button);return;}
@@ -286,8 +291,9 @@ document.addEventListener('click',async e=>{
     if(a==='run'){const r=await api('/api/run',{method:'POST',body:'{}'});await refresh();toast(`检查完成：生成 ${r.generated} 项任务，新增 ${r.reminded} 条提醒`);}
   }catch(error){toast(error.message,true);}finally{button.disabled=false;}
 });
-document.addEventListener('input',e=>{if(e.target.id==='task-search'){query=e.target.value;taskPage=1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}if(e.target.closest('#ai-document-form,#ai-template-form'))ai.input(e.target);});
+document.addEventListener('input',e=>{if(e.target.closest('.task-workspace'))workflow.input(e.target);if(e.target.id==='task-search'){query=e.target.value;taskPage=1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}if(e.target.closest('#ai-document-form,#ai-template-form'))ai.input(e.target);});
 document.addEventListener('change',async e=>{
+  if(e.target.closest('.task-workspace')){await workflow.change(e.target);return;}
   if(e.target.id==='ai-material-file'||e.target.id==='ai-template-file'){await ai.change(e.target);return;}
   if(e.target.id==='owner-filter'||e.target.id==='submission-filter'){if(e.target.id==='owner-filter')ownerFilter=e.target.value;else submissionFilter=e.target.value;taskPage=1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}
   if(e.target.id==='task-page-select'){taskPage=Number(e.target.value)||1;document.querySelector('#task-results').innerHTML=taskResults(page==='overview');}
@@ -296,6 +302,7 @@ document.addEventListener('change',async e=>{
   if(e.target.id==='csv-file'){const f=e.target.files[0];if(f){if(f.size>1024*1024){toast('文件过大，请使用小于一兆的表格文件',true);e.target.value='';return;}document.querySelector('#csv-text').value=await f.text();}}
 });
 document.addEventListener('submit',async e=>{
+  if(e.target.id.startsWith('tw-')){e.preventDefault();await workflow.onSubmit(e.target);return;}
   if(e.target.id.startsWith('ai-')){e.preventDefault();if(!ai.busy)await ai.onSubmit(e.target);return;}
   if(e.target.id==='completion-form'){e.preventDefault();await submitCompletion(e.target);return;}
   if(e.target.id==='serverchan-form'){e.preventDefault();await saveServerchan(e.target);return;}
@@ -304,7 +311,7 @@ document.addEventListener('submit',async e=>{
   try{
     if(form.id==='task-form'){
       if(fields.dueDate<fields.startDate)throw new Error('截止日期不能早于开始日期，请调整后再保存。');
-      const id=form.dataset.id;const r=await api(id?`/api/tasks/${encodeURIComponent(id)}`:'/api/tasks',{method:id?'PATCH':'POST',body:JSON.stringify(fields)});await refresh();closeDrawer();toast(id?'任务已更新，变更已记录':'任务创建成功，已保存到本机');
+      const id=form.dataset.id;await api(id?`/api/tasks/${encodeURIComponent(id)}`:'/api/tasks',{method:id?'PATCH':'POST',body:JSON.stringify(fields)});await refresh();closeDrawer();if(!id)navigate('tasks');toast(id?'任务已更新，变更已记录':'任务创建成功，已保存到本机');
     }
     if(form.id==='template-form'){fields.dueDays=Number(fields.dueDays);fields.active=fields.active==='启用';const id=form.dataset.id;await api(id?`/api/templates/${encodeURIComponent(id)}`:'/api/templates',{method:id?'PATCH':'POST',body:JSON.stringify(fields)});await refresh();closeDrawer();toast(id?'固定任务规则已更新':'固定任务规则已创建，将在检查时自动生成');}
     if(form.id==='settings-form'){fields.reminderDays=Number(fields.reminderDays);await api('/api/settings',{method:'PATCH',body:JSON.stringify(fields)});await refresh();toast('设置已保存，下次检查时生效');}
@@ -316,6 +323,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){closeDrawer();return;}
   if(e.key==='Tab'){const elements=[...drawer.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]')].filter(el=>el.offsetParent!==null);const first=elements[0],last=elements.at(-1);if(e.shiftKey&&(document.activeElement===first||document.activeElement===drawer)){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}
 });
-window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(pageNames[p]&&p!==page){page=p;query='';ownerFilter='';submissionFilter='';taskFilter='全部';taskPage=1;renderApp();if(p==='ai')ai.load();window.scrollTo(0,0);}});
-setInterval(()=>{if(!ai.busy&&!document.hidden&&!document.querySelector('.drawer, .sidebar.mobile-open')&&!['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))refresh();},30000);
-renderApp();refresh();
+window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(p.startsWith('task/')){page='task';let taskId;try{taskId=decodeURIComponent(p.slice(5));}catch{taskId=p.slice(5);}workflow.open(taskId);renderApp();window.scrollTo(0,0);return;}if(pageNames[p]&&p!==page){page=p;query='';ownerFilter='';submissionFilter='';taskFilter='全部';taskPage=1;renderApp();if(p==='ai')ai.load();window.scrollTo(0,0);}});
+window.addEventListener('beforeunload',e=>{if(workflow.hasUnsaved){e.preventDefault();e.returnValue='';}});
+setInterval(()=>{if(page!=='task'&&!workflow.busy&&!ai.busy&&!document.hidden&&!document.querySelector('.drawer, .sidebar.mobile-open')&&!['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))refresh();},30000);
+renderApp();if(page==='task'){let taskId;try{taskId=decodeURIComponent(location.hash.slice(6));}catch{taskId=location.hash.slice(6);}workflow.open(taskId);}refresh();

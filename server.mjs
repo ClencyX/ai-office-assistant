@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,8 @@ import { OfficeStore } from './lib/office.mjs';
 import { InputError } from './lib/csv.mjs';
 import { ServerChanService } from './lib/serverchan.mjs';
 import { AiService } from './lib/ai.mjs';
+import { AiJobs } from './lib/ai-jobs.mjs';
+import { TaskWorkflow } from './lib/task-workflow.mjs';
 import { createDocx, extractTextFile } from './lib/ai-files.mjs';
 
 const projectDir = dirname(fileURLToPath(import.meta.url));
@@ -46,6 +48,8 @@ export function createApplication(options = {}) {
   const store = new OfficeStore({ databasePath: join(dataDir, 'office.sqlite'), seedDemo: options.seedDemo ?? process.env.SEED_DEMO !== '0', scheduler, ...(options.now ? { now: options.now } : {}) });
   const serverchan = new ServerChanService({ store, dataDir, sendKey: options.serverChanSendKey ?? process.env.SERVERCHAN_SENDKEY ?? '', ...(options.serverChanFetch ? { fetchImpl: options.serverChanFetch } : {}), ...(options.serverChanTimeoutMs ? { timeoutMs: options.serverChanTimeoutMs } : {}) });
   const ai = new AiService({ store, dataDir, ...(options.aiFetch ? { fetchImpl: options.aiFetch } : {}), ...(options.aiTimeoutMs ? { timeoutMs: options.aiTimeoutMs } : {}) });
+  const jobs = new AiJobs(options.now ? { now: options.now } : {});
+  const workflow = new TaskWorkflow({ store, ai });
   let timer; let closed = false;
   const runTasks = async actor => ({ ...store.run(actor), serverchan: await serverchan.runScheduled() });
   const localNames = new Set(['localhost', '127.0.0.1', '[::1]', ...(host === '0.0.0.0' || host === '::' ? [] : [host])]);
@@ -63,6 +67,20 @@ export function createApplication(options = {}) {
           if (pathname === '/api/state') return json(response, 200, { ...store.state(), serverchan: serverchan.snapshot() });
           if (pathname === '/api/serverchan') return json(response, 200, { serverchan: serverchan.snapshot() });
           if (pathname === '/api/ai') return json(response, 200, ai.state());
+          const aiJobMatch = pathname.match(/^\/api\/ai\/jobs\/([^/]+)$/);
+          if (aiJobMatch) {
+            const job = jobs.get(decodeURIComponent(aiJobMatch[1]));
+            if (job.taskId) store.getTask(job.taskId);
+            return json(response, 200, { job });
+          }
+          const workspaceMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/workspace$/);
+          if (workspaceMatch) return json(response, 200, workflow.workspace(decodeURIComponent(workspaceMatch[1])));
+          const sourceDownload = pathname.match(/^\/api\/tasks\/([^/]+)\/sources\/([^/]+)\/download$/);
+          if (sourceDownload) {
+            const file = workflow.source(decodeURIComponent(sourceDownload[1]), decodeURIComponent(sourceDownload[2]), true);
+            response.writeHead(200, { 'Content-Type': file.mimeType, 'Content-Length': file.size, 'Content-Disposition': `attachment; filename="source${extname(file.name).toLowerCase()}"; filename*=UTF-8''${encodeURIComponent(file.name).replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`, 'Cache-Control': 'no-store' });
+            return response.end(file.content);
+          }
           const aiMaterial = pathname.match(/^\/api\/ai\/materials\/([^/]+)$/);
           if (aiMaterial) return json(response, 200, { material: ai.getMaterial(decodeURIComponent(aiMaterial[1])) });
           const aiDocument = pathname.match(/^\/api\/ai\/documents\/([^/]+)(\/export)?$/);
@@ -99,11 +117,38 @@ export function createApplication(options = {}) {
         }
         if (!['POST', 'PATCH', 'DELETE'].includes(method)) throw new InputError('不支持该请求方式。', 405);
         const completeMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/complete$/);
-        checkWrite(request, automationKey, isAutomation); const body = await readJson(request, method === 'POST' && completeMatch ? 36 * 1024 * 1024 : method === 'POST' && pathname === '/api/ai/transcribe' ? 29 * 1024 * 1024 : 2 * 1024 * 1024);
+        const sourceUploadMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/sources$/);
+        const sourceExtractJobMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/sources\/([^/]+)\/extract-jobs$/);
+        const sourceMutationMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/sources\/([^/]+)(\/extract)?$/);
+        const taskDraftMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/draft$/);
+        const taskSubmitMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/submit$/);
+        const taskFinishMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/finish$/);
+        checkWrite(request, automationKey, isAutomation); const body = await readJson(request, method === 'POST' && completeMatch ? 36 * 1024 * 1024 : method === 'POST' && (['/api/ai/transcribe', '/api/ai/transcribe-jobs'].includes(pathname) || sourceUploadMatch) ? 136 * 1024 * 1024 : 2 * 1024 * 1024);
+        if (method === 'POST' && sourceUploadMatch) return json(response, 201, workflow.addSource(decodeURIComponent(sourceUploadMatch[1]), body));
+        if (method === 'POST' && sourceExtractJobMatch) {
+          if (body.consent !== true) throw new InputError('请先确认同意将该原件发送到当前配置的模型服务。');
+          const taskId = decodeURIComponent(sourceExtractJobMatch[1]), sourceId = decodeURIComponent(sourceExtractJobMatch[2]);
+          workflow.activeTask(taskId);
+          if (workflow.source(taskId, sourceId).materialId) throw new InputError('该资料已有识别正文，请直接核对或编辑正文，不会覆盖已有内容。', 409);
+          const job = jobs.start({ key: `source:${taskId}:${sourceId}`, taskId, run: onProgress => workflow.extractSource(taskId, sourceId, body, onProgress) });
+          return json(response, 202, { job });
+        }
+        if (method === 'POST' && sourceMutationMatch?.[3]) return json(response, 200, await workflow.extractSource(decodeURIComponent(sourceMutationMatch[1]), decodeURIComponent(sourceMutationMatch[2]), body));
+        if (method === 'DELETE' && sourceMutationMatch && !sourceMutationMatch[3]) return json(response, 200, workflow.deleteSource(decodeURIComponent(sourceMutationMatch[1]), decodeURIComponent(sourceMutationMatch[2])));
+        if (method === 'POST' && taskDraftMatch) return json(response, 201, await workflow.draft(decodeURIComponent(taskDraftMatch[1]), body));
+        if (method === 'POST' && taskSubmitMatch) return json(response, 200, workflow.submit(decodeURIComponent(taskSubmitMatch[1]), body));
+        if (method === 'POST' && taskFinishMatch) return json(response, 200, workflow.finish(decodeURIComponent(taskFinishMatch[1]), body));
         if (method === 'PATCH' && pathname === '/api/ai/settings') return json(response, 200, { settings: ai.updateSettings(body) });
         if (method === 'POST' && pathname === '/api/ai/test') return json(response, 200, await ai.testConnection(body));
         if (method === 'POST' && pathname === '/api/ai/import') return json(response, 200, extractTextFile(body.file));
         if (method === 'POST' && pathname === '/api/ai/transcribe') return json(response, 200, await ai.transcribe(body));
+        if (method === 'POST' && pathname === '/api/ai/transcribe-jobs') {
+          if (body.consent !== true) throw new InputError('请先确认同意将所选录音发送到当前配置的模型服务。');
+          if (typeof body.file?.contentBase64 !== 'string' || !body.file.contentBase64) throw new InputError('请选择有效的录音文件。');
+          const hash = createHash('sha256').update(body.file.contentBase64).digest('hex');
+          const job = jobs.start({ key: `transcribe:${hash}`, run: onProgress => ai.transcribe(body, onProgress) });
+          return json(response, 202, { job });
+        }
         if (method === 'POST' && pathname === '/api/ai/templates/analyze') return json(response, 200, { suggestion: await ai.analyzeTemplate(body) });
         if (method === 'POST' && pathname === '/api/ai/templates') return json(response, 201, { template: ai.saveTemplate(body) });
         const aiTemplateMatch = pathname.match(/^\/api\/ai\/templates\/([^/]+)$/);
@@ -164,7 +209,7 @@ export function createApplication(options = {}) {
   });
   server.requestTimeout = 30_000; server.headersTimeout = 15_000;
   return {
-    server, store, serverchan, ai, host, port, dataDir,
+    server, store, serverchan, ai, jobs, workflow, host, port, dataDir,
     async start() {
       store.run();
       await new Promise((resolveStart, rejectStart) => { server.once('error', rejectStart); server.listen(port, host, () => { server.removeListener('error', rejectStart); resolveStart(); }); });
@@ -176,6 +221,7 @@ export function createApplication(options = {}) {
       if (closed) return; closed = true; clearInterval(timer);
       const closingServer = server.listening ? new Promise((resolveClose, rejectClose) => server.close(error => error ? rejectClose(error) : resolveClose())) : Promise.resolve();
       await Promise.all([serverchan.close(), ai.close()]);
+      await jobs.close();
       await closingServer;
       store.close();
     }
